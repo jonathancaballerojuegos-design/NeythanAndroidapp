@@ -111,7 +111,6 @@ class FloatingService : Service(), TextToSpeech.OnInitListener {
                     val dy = Math.abs(event.rawY - initialTouchY)
                     if (dt < 250 && dx < 15 && dy < 15) {
                         hablar("¿Dime, Jonathan?")
-                        reiniciarEscucha(500)
                     }
                     false
                 }
@@ -194,12 +193,18 @@ class FloatingService : Service(), TextToSpeech.OnInitListener {
                 }
                 override fun onDone(utteranceId: String?) {
                     mainHandler.post {
-                        if (!isDestroyed) webView.evaluateJavascript("window.animarBocaNativa(false)", null)
+                        if (!isDestroyed) {
+                            webView.evaluateJavascript("window.animarBocaNativa(false)", null)
+                            reiniciarEscucha(500)
+                        }
                     }
                 }
                 override fun onError(utteranceId: String?) {
                     mainHandler.post {
-                        if (!isDestroyed) webView.evaluateJavascript("window.animarBocaNativa(false)", null)
+                        if (!isDestroyed) {
+                            webView.evaluateJavascript("window.animarBocaNativa(false)", null)
+                            reiniciarEscucha(500)
+                        }
                     }
                 }
             })
@@ -209,6 +214,8 @@ class FloatingService : Service(), TextToSpeech.OnInitListener {
     private fun hablar(texto: String) {
         if (isDestroyed) return
         try {
+            escuchando = false
+            speechRecognizer?.stopListening()
             speechRecognizer?.cancel()
         } catch (_: Exception) {}
         
