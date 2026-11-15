@@ -18,45 +18,28 @@ import android.webkit.WebChromeClient
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import android.widget.LinearLayout
-import android.widget.TextView
+import android.widget.FrameLayout
 import androidx.core.app.NotificationCompat
 
 class FloatingService : Service() {
 
     private lateinit var windowManager: WindowManager
-    private lateinit var floatingView: LinearLayout
-    private val CHANNEL_ID = "NeythanForegroundChannel"
+    private lateinit var floatingContainer: FrameLayout
+    private lateinit var webView: WebView
+    private lateinit var params: WindowManager.LayoutParams
+
+    private var initialX = 0
+    private var initialY = 0
+    private var initialTouchX = 0f
+    private var initialTouchY = 0f
+    private var isDragging = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
-        crearCanalNotificacion()
-        val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Neythan AI Activo")
-            .setContentText("Escuchando y flotando en segundo plano")
-            .setSmallIcon(android.R.drawable.ic_btn_speak_now)
-            .setOngoing(true)
-            .build()
+        startForegroundServiceNotification()
 
-        startForeground(1, notification)
-        mostrarVentanaFlotante()
-    }
-
-    private fun crearCanalNotificacion() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                "Servicio en Segundo Plano Neythan",
-                NotificationManager.IMPORTANCE_LOW
-            )
-            val manager = getSystemService(NotificationManager::class.java)
-            manager.createNotificationChannel(channel)
-        }
-    }
-
-    private fun mostrarVentanaFlotante() {
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
 
         val layoutFlag = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -66,88 +49,131 @@ class FloatingService : Service() {
             WindowManager.LayoutParams.TYPE_PHONE
         }
 
-        val params = WindowManager.LayoutParams(
+        // FLAG_LAYOUT_NO_LIMITS elimina los límites de la pantalla para que pueda moverse libremente incluso por los bordes
+        params = WindowManager.LayoutParams(
             420,
-            480,
+            420,
             layoutFlag,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                    WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
             PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.START
-            x = 60
-            y = 180
+        )
+
+        params.gravity = Gravity.TOP or Gravity.START
+        params.x = 120
+        params.y = 300
+
+        floatingContainer = FrameLayout(this)
+        floatingContainer.setBackgroundColor(Color.TRANSPARENT)
+
+        webView = WebView(this)
+        webView.setBackgroundColor(Color.TRANSPARENT)
+        webView.setLayerType(View.LAYER_TYPE_HARDWARE, null)
+
+        val settings: WebSettings = webView.settings
+        settings.javaScriptEnabled = true
+        settings.domStorageEnabled = true
+        settings.mediaPlaybackRequiresUserGesture = false
+        settings.databaseEnabled = true
+        settings.cacheMode = WebSettings.LOAD_DEFAULT
+
+        webView.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
+                if (url != null && !url.startsWith("http")) {
+                    try {
+                        val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url))
+                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        startActivity(intent)
+                        return true
+                    } catch (_: Exception) {
+                    }
+                }
+                return false
+            }
         }
 
-        floatingView = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.TRANSPARENT)
+        webView.webChromeClient = object : WebChromeClient() {
+            override fun onPermissionRequest(request: PermissionRequest?) {
+                request?.grant(request.resources)
+            }
         }
 
-        val barraArrastre = TextView(this).apply {
-            text = "  ≡ NEYTHAN (Arrastrar)        ✕  "
-            textSize = 11f
-            setTextColor(0xFF00E5FF.toInt())
-            setBackgroundColor(0x99050811.toInt())
-            setPadding(12, 8, 12, 8)
-        }
-
-        barraArrastre.setOnClickListener {
-            stopSelf()
-        }
-
-        var initialX = 0
-        var initialY = 0
-        var initialTouchX = 0f
-        var initialTouchY = 0f
-
-        barraArrastre.setOnTouchListener { _, event ->
+        // Arrastre libre desde cualquier parte del contenedor flotante sin barra de texto superior
+        webView.setOnTouchListener { _, event ->
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
                     initialX = params.x
                     initialY = params.y
                     initialTouchX = event.rawX
                     initialTouchY = event.rawY
-                    true
+                    isDragging = false
+                    false
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    params.x = initialX + (event.rawX - initialTouchX).toInt()
-                    params.y = initialY + (event.rawY - initialTouchY).toInt()
-                    windowManager.updateViewLayout(floatingView, params)
-                    true
+                    val dx = (event.rawX - initialTouchX).toInt()
+                    val dy = (event.rawY - initialTouchY).toInt()
+                    if (Math.abs(dx) > 12 || Math.abs(dy) > 12) {
+                        isDragging = true
+                        params.x = initialX + dx
+                        params.y = initialY + dy
+                        windowManager.updateViewLayout(floatingContainer, params)
+                    }
+                    isDragging
+                }
+                MotionEvent.ACTION_UP -> {
+                    if (isDragging) {
+                        isDragging = false
+                        true
+                    } else {
+                        false
+                    }
                 }
                 else -> false
             }
         }
 
-        val webView = WebView(this).apply {
-            setBackgroundColor(Color.TRANSPARENT)
-            settings.javaScriptEnabled = true
-            settings.domStorageEnabled = true
-            settings.mediaPlaybackRequiresUserGesture = false
-            settings.cacheMode = WebSettings.LOAD_DEFAULT
+        floatingContainer.addView(
+            webView,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        )
 
-            webViewClient = WebViewClient()
-            webChromeClient = object : WebChromeClient() {
-                override fun onPermissionRequest(request: PermissionRequest) {
-                    request.grant(request.resources)
-                }
-            }
-            loadUrl("https://neythanproyect.onrender.com/?burbuja=1")
+        webView.loadUrl("https://neythanproyect.onrender.com/?burbuja=1")
+        windowManager.addView(floatingContainer, params)
+    }
+
+    private fun startForegroundServiceNotification() {
+        val channelId = "neythan_overlay_channel"
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                channelId,
+                "Neythan en Segundo Plano",
+                NotificationManager.IMPORTANCE_LOW
+            )
+            val manager = getSystemService(NotificationManager::class.java)
+            manager.createNotificationChannel(channel)
         }
 
-        floatingView.addView(barraArrastre)
-        floatingView.addView(webView, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            LinearLayout.LayoutParams.MATCH_PARENT
-        ))
+        val notification: Notification = NotificationCompat.Builder(this, channelId)
+            .setContentTitle("Neythan Activo")
+            .setContentText("Asistente flotante en ejecución")
+            .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+            .setOngoing(true)
+            .build()
 
-        windowManager.addView(floatingView, params)
+        startForeground(1001, notification)
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        if (::floatingView.isInitialized) {
-            windowManager.removeView(floatingView)
+        if (::floatingContainer.isInitialized) {
+            windowManager.removeView(floatingContainer)
+        }
+        if (::webView.isInitialized) {
+            webView.destroy()
         }
     }
 }
