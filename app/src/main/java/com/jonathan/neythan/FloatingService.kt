@@ -27,9 +27,12 @@ class FloatingService : Service(), TextToSpeech.OnInitListener {
     private var tts: TextToSpeech? = null
     private var escuchando = false
     private var linternaEncendida = false
+    private var isDestroyed = false
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     override fun onCreate() {
         super.onCreate()
+        isDestroyed = false
         iniciarNotificacion()
         tts = TextToSpeech(this, this)
         configurarVentanaFlotante()
@@ -97,7 +100,9 @@ class FloatingService : Service(), TextToSpeech.OnInitListener {
                 MotionEvent.ACTION_MOVE -> {
                     params.x = initialX + (event.rawX - initialTouchX).toInt()
                     params.y = initialY + (event.rawY - initialTouchY).toInt()
-                    windowManager.updateViewLayout(webView, params)
+                    if (!isDestroyed) {
+                        windowManager.updateViewLayout(webView, params)
+                    }
                     true
                 }
                 MotionEvent.ACTION_UP -> {
@@ -118,13 +123,16 @@ class FloatingService : Service(), TextToSpeech.OnInitListener {
     }
 
     private fun iniciarReconocimientoVoz() {
-        Handler(Looper.getMainLooper()).post {
+        if (isDestroyed) return
+        mainHandler.post {
+            if (isDestroyed) return@post
             try {
                 speechRecognizer?.destroy()
                 speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)
                 val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                     putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                     putExtra(RecognizerIntent.EXTRA_LANGUAGE, "es-ES")
+                    putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
                 }
                 speechRecognizer?.setRecognitionListener(object : RecognitionListener {
                     override fun onReadyForSpeech(params: Bundle?) { escuchando = true }
@@ -143,8 +151,12 @@ class FloatingService : Service(), TextToSpeech.OnInitListener {
                         if (texto.contains("neythan") || texto.contains("despierta")) {
                             val orden = texto.replace("neythan", "").replace("despierta", "").trim()
                             if (orden.isNotEmpty()) {
-                                val escapado = orden.replace("'", "\'")
-                                webView.evaluateJavascript("window.recibirOrdenDesdeNativo('$escapado')", null)
+                                val escapado = orden.replace("'", "\\'")
+                                mainHandler.post {
+                                    if (!isDestroyed) {
+                                        webView.evaluateJavascript("window.recibirOrdenDesdeNativo('$escapado')", null)
+                                    }
+                                }
                             } else {
                                 hablar("Ya estoy despierto, Jonathan. ¿Qué necesitas?")
                             }
@@ -156,14 +168,18 @@ class FloatingService : Service(), TextToSpeech.OnInitListener {
                 })
                 speechRecognizer?.startListening(intent)
             } catch (_: Exception) {
+                escuchando = false
                 reiniciarEscucha(1500)
             }
         }
     }
 
     private fun reiniciarEscucha(delayMs: Long) {
-        Handler(Looper.getMainLooper()).postDelayed({
-            if (!escuchando) iniciarReconocimientoVoz()
+        if (isDestroyed) return
+        mainHandler.postDelayed({
+            if (!isDestroyed && !escuchando) {
+                iniciarReconocimientoVoz()
+            }
         }, delayMs)
     }
 
@@ -172,18 +188,18 @@ class FloatingService : Service(), TextToSpeech.OnInitListener {
             tts?.language = Locale("es", "MX")
             tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                 override fun onStart(utteranceId: String?) {
-                    Handler(Looper.getMainLooper()).post {
-                        webView.evaluateJavascript("window.animarBocaNativa(true)", null)
+                    mainHandler.post {
+                        if (!isDestroyed) webView.evaluateJavascript("window.animarBocaNativa(true)", null)
                     }
                 }
                 override fun onDone(utteranceId: String?) {
-                    Handler(Looper.getMainLooper()).post {
-                        webView.evaluateJavascript("window.animarBocaNativa(false)", null)
+                    mainHandler.post {
+                        if (!isDestroyed) webView.evaluateJavascript("window.animarBocaNativa(false)", null)
                     }
                 }
                 override fun onError(utteranceId: String?) {
-                    Handler(Looper.getMainLooper()).post {
-                        webView.evaluateJavascript("window.animarBocaNativa(false)", null)
+                    mainHandler.post {
+                        if (!isDestroyed) webView.evaluateJavascript("window.animarBocaNativa(false)", null)
                     }
                 }
             })
@@ -191,7 +207,11 @@ class FloatingService : Service(), TextToSpeech.OnInitListener {
     }
 
     private fun hablar(texto: String) {
-        speechRecognizer?.cancel()
+        if (isDestroyed) return
+        try {
+            speechRecognizer?.cancel()
+        } catch (_: Exception) {}
+        
         val paramsTts = Bundle()
         tts?.speak(texto, TextToSpeech.QUEUE_FLUSH, paramsTts, "neythan_utt")
     }
@@ -199,12 +219,13 @@ class FloatingService : Service(), TextToSpeech.OnInitListener {
     inner class PuenteNativo {
         @JavascriptInterface
         fun hablarNativo(texto: String) {
-            Handler(Looper.getMainLooper()).post { hablar(texto) }
+            mainHandler.post { hablar(texto) }
         }
 
         @JavascriptInterface
         fun ejecutarComandoAndroid(cmd: String) {
-            Handler(Looper.getMainLooper()).post {
+            mainHandler.post {
+                if (isDestroyed) return@post
                 try {
                     when {
                         cmd == "linterna_on" || cmd == "linterna_off" -> {
@@ -241,9 +262,25 @@ class FloatingService : Service(), TextToSpeech.OnInitListener {
     }
 
     override fun onDestroy() {
-        speechRecognizer?.destroy()
-        tts?.shutdown()
-        if (::webView.isInitialized) windowManager.removeView(webView)
+        isDestroyed = true
+        mainHandler.removeCallbacksAndMessages(null)
+        try {
+            speechRecognizer?.destroy()
+        } catch (_: Exception) {}
+        speechRecognizer = null
+        
+        try {
+            tts?.stop()
+            tts?.shutdown()
+        } catch (_: Exception) {}
+        tts = null
+
+        if (::webView.isInitialized) {
+            try {
+                windowManager.removeView(webView)
+                webView.destroy()
+            } catch (_: Exception) {}
+        }
         super.onDestroy()
     }
 
