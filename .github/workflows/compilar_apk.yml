@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Descargar código del repositorio
+      - name: Descargar codigo del repositorio
         uses: actions/checkout@v4
 
       - name: Configurar Java 17
@@ -19,13 +19,19 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Configurar Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Preparar entorno Gradle
+      - name: Preparar entorno Gradle y AndroidX
         run: |
-          echo "rootProject.name = 'NeythanAndroidApp'" > settings.gradle.kts
-          echo "include(':app')" >> settings.gradle.kts
+          echo "rootProject.name = \"NeythanAndroidApp\"" > settings.gradle.kts
+          echo "include(\":app\")" >> settings.gradle.kts
+          cat << 'EOF' > build.gradle.kts
+          plugins {
+              id("com.android.application") version "8.2.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.22" apply false
+          }
+          EOF
+          echo "android.useAndroidX=true" > gradle.properties
+          echo "org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8" >> gradle.properties
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
           gradle wrapper --gradle-version 8.4
 
       - name: Compilar APK Debug
