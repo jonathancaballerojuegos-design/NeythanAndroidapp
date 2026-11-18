@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>N.E.Y.T.H.A.N. // A.I. CORE</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
+        body {
+            background-color: #000000;
+            color: #00f0ff;
+            font-family: 'Courier New', Courier, monospace;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            align-items: center;
+            overflow: hidden;
+            padding: 20px 15px;
+        }
+        .core-container {
+            position: relative;
+            width: 300px;
+            height: 300px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            margin-top: 20px;
+        }
+        #core-img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            mix-blend-mode: screen;
+            transition: filter 0.6s ease, transform 0.1s ease;
+            animation: spinSlow 24s linear infinite;
+        }
+        @keyframes spinSlow {
+            from { transform: rotate(0deg) scale(var(--pulse, 1)); }
+            to { transform: rotate(360deg) scale(var(--pulse, 1)); }
+        }
+        .state-ACTIVO #core-img { filter: hue-rotate(0deg) brightness(1.05); animation-duration: 24s; }
+        .state-ESCUCHANDO #core-img { filter: hue-rotate(165deg) saturate(1.8) brightness(1.25); animation-duration: 10s; }
+        .state-PROCESANDO #core-img { filter: hue-rotate(85deg) saturate(1.6) brightness(1.2); animation-duration: 6s; }
+        .state-FELIZ #core-img { filter: hue-rotate(130deg) saturate(1.4) brightness(1.2); animation-duration: 16s; }
+        .state-ALERTA #core-img { filter: hue-rotate(315deg) saturate(2.5) brightness(1.2); animation-duration: 8s; }
+        .state-REPOSO #core-img { filter: hue-rotate(240deg) saturate(1.2) brightness(0.7); animation-duration: 45s; }
+
+        #waveCanvas {
+            width: 100%;
+            max-width: 360px;
+            height: 75px;
+            background: transparent;
+        }
+        .hud-panel {
+            width: 100%;
+            max-width: 380px;
+            text-align: center;
+            background: rgba(0, 20, 30, 0.35);
+            border: 1px solid rgba(0, 240, 255, 0.25);
+            border-radius: 12px;
+            padding: 14px;
+        }
+        .title {
+            font-size: 1.15rem;
+            font-weight: bold;
+            letter-spacing: 2px;
+            color: #ffbe55;
+            margin-bottom: 8px;
+        }
+        .status-line {
+            font-size: 0.85rem;
+            color: #7eeeff;
+            margin: 4px 0;
+        }
+        #reply-box {
+            margin-top: 10px;
+            font-size: 0.9rem;
+            color: #ffffff;
+            min-height: 44px;
+            max-height: 90px;
+            overflow-y: auto;
+            line-height: 1.35;
+        }
+        .controls {
+            display: flex;
+            gap: 12px;
+            width: 100%;
+            max-width: 380px;
+            margin-bottom: 10px;
+        }
+        button {
+            flex: 1;
+            padding: 14px;
+            background: rgba(0, 240, 255, 0.12);
+            border: 1px solid #00f0ff;
+            color: #00f0ff;
+            border-radius: 10px;
+            font-family: inherit;
+            font-weight: bold;
+            font-size: 0.9rem;
+            cursor: pointer;
+        }
+        button:active { background: rgba(0, 240, 255, 0.35); }
+    </style>
+</head>
+<body class="state-ACTIVO">
+
+    <div class="core-container">
+        <img id="core-img" src="/nucleo_neythan.png" alt="N.E.Y.T.H.A.N. Core">
+    </div>
+
+    <canvas id="waveCanvas" width="360" height="75"></canvas>
+
+    <div class="hud-panel">
+        <div class="title" id="core-title">N.E.Y.T.H.A.N. // ACTIVO</div>
+        <div class="status-line" id="telemetry-line">CPU: --% | RAM: --% | RED: CONECTANDO</div>
+        <div id="reply-box">Iniciando sistemas centrales...</div>
+    </div>
+
+    <div class="controls">
+        <button id="btn-mic" onclick="toggleListening()">ACTIVAR VOZ</button>
+        <button onclick="setState('REPOSO')">MODO REPOSO</button>
+    </div>
+
+    <script>
+        let ws;
+        let audioCtx, analyser, dataArray, source;
+        let isMicActive = false;
+        let recognition;
+        const coreImg = document.getElementById('core-img');
+        const canvas = document.getElementById('waveCanvas');
+        const ctx = canvas.getContext('2d');
+
+        function setState(newState) {
+            document.body.className = 'state-' + newState;
+            document.getElementById('core-title').innerText = `N.E.Y.T.H.A.N. // ${newState}`;
+        }
+
+        function connectWS() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${protocol}//${window.location.host}/ws/neythan`);
+
+            ws.onopen = () => {
+                document.getElementById('telemetry-line').innerText = 'CPU: 12% | RED: SEGURA';
+            };
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                if (data.type === 'telemetry') {
+                    document.getElementById('telemetry-line').innerText =
+                        `CPU: ${data.cpu}% | RAM: ${data.ram}% | RED: SEGURA`;
+                } else if (data.type === 'status') {
+                    setState(data.state);
+                    document.getElementById('reply-box').innerText = data.message;
+                } else if (data.type === 'response') {
+                    setState(data.state);
+                    document.getElementById('reply-box').innerText = data.reply;
+                    speakText(data.reply);
+                }
+            };
+
+            ws.onclose = () => {
+                document.getElementById('telemetry-line').innerText = 'RECONECTANDO SERVIDOR...';
+                setTimeout(connectWS, 3000);
+            };
+        }
+
+        function speakText(text) {
+            if ('speechSynthesis' in window) {
+                window.speechSynthesis.cancel();
+                const utterance = new SpeechSynthesisUtterance(text);
+                utterance.lang = 'es-ES';
+                utterance.rate = 1.02;
+                utterance.pitch = 0.92;
+                window.speechSynthesis.speak(utterance);
+            }
+        }
+
+        async function initAudioVisualizer() {
+            if (isMicActive) return;
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    audio: { echoCancellation: true, noiseSuppression: true }
+                });
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                analyser = audioCtx.createAnalyser();
+                analyser.fftSize = 128;
+                source = audioCtx.createMediaStreamSource(stream);
+                source.connect(analyser);
+                dataArray = new Uint8Array(analyser.frequencyBinCount);
+                isMicActive = true;
+                drawWave();
+            } catch (err) {
+                document.getElementById('reply-box').innerText = 'Permiso de micrófono requerido, señor.';
+            }
+        }
+
+        function drawWave() {
+            requestAnimationFrame(drawWave);
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            if (!analyser) return;
+
+            analyser.getByteFrequencyData(dataArray);
+            let sum = 0;
+            const barWidth = (canvas.width / dataArray.length) * 1.6;
+            let x = 0;
+
+            for (let i = 0; i < dataArray.length; i++) {
+                const val = dataArray[i];
+                sum += val;
+                const barHeight = (val / 255) * (canvas.height * 0.85);
+                ctx.fillStyle = `rgba(0, 240, 255, ${0.3 + val / 255})`;
+                ctx.fillRect(x, (canvas.height - barHeight) / 2, barWidth - 2, barHeight);
+                x += barWidth;
+            }
+            const avg = sum / dataArray.length;
+            const pulse = 1 + (avg / 255) * 0.14;
+            coreImg.style.setProperty('--pulse', pulse.toFixed(3));
+        }
+
+        function toggleListening() {
+            initAudioVisualizer();
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!SpeechRecognition) {
+                document.getElementById('reply-box').innerText = 'Reconocimiento de voz no soportado en este navegador.';
+                return;
+            }
+            if (!recognition) {
+                recognition = new SpeechRecognition();
+                recognition.lang = 'es-ES';
+                recognition.continuous = true;
+                recognition.interimResults = false;
+
+                recognition.onstart = () => {
+                    setState('ESCUCHANDO');
+                    document.getElementById('btn-mic').innerText = 'ESCUCHANDO...';
+                };
+
+                recognition.onresult = (event) => {
+                    const last = event.results.length - 1;
+                    const transcript = event.results[last][0].transcript.trim();
+                    const lower = transcript.toLowerCase();
+
+                    if (lower.includes('neythan') || lower.includes('despierta') || transcript.length > 2) {
+                        const cleanCommand = transcript.replace(/neythan|despierta/gi, '').trim() || 'Reporta estado.';
+                        document.getElementById('reply-box').innerText = `Usted: "${cleanCommand}"`;
+                        if (ws && ws.readyState === WebSocket.OPEN) {
+                            ws.send(JSON.stringify({ text: cleanCommand }));
+                        }
+                    }
+                };
+
+                recognition.onend = () => {
+                    try { recognition.start(); } catch (e) {}
+                };
+            }
+            try { recognition.start(); } catch (e) {}
+        }
+
+        connectWS();
+    </script>
+</body>
+</html>
