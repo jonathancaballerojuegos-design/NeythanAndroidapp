@@ -2,116 +2,140 @@ package com.jonathan.neythan
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.Color
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.view.WindowManager
+import android.provider.Settings
+import android.webkit.JavascriptInterface
 import android.webkit.PermissionRequest
 import android.webkit.WebChromeClient
-import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import androidx.activity.result.contract.ActivityResultContracts
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 
 class MainActivity : AppCompatActivity() {
 
-    // REEMPLAZA ESTA URL POR EL ENLACE EXACTO DE TU SERVICIO EN RENDER (SIN '/' AL FINAL)
-    private val SERVER_URL = "https://neythanproyect-cloud.onrender.com"
-
     private lateinit var webView: WebView
-
-    private val requestPermissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { permissions ->
-        if (permissions[Manifest.permission.RECORD_AUDIO] == true) {
-            iniciarServicioSegundoPlano()
-            cargarInterfazNeythan()
-        }
-    }
+    private val SERVER_URL = "https://neythanproyect-cloud.onrender.com"
+    private val AUDIO_PERMISSION_CODE = 1001
+    private val OVERLAY_PERMISSION_CODE = 1002
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Fondo negro puro AMOLED y pantalla activa mientras interactuas
-        window.statusBarColor = Color.BLACK
-        window.navigationBarColor = Color.BLACK
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        window.statusBarColor = android.graphics.Color.BLACK
+        window.navigationBarColor = android.graphics.Color.BLACK
 
-        webView = WebView(this).apply {
-            setBackgroundColor(Color.BLACK)
-            settings.apply {
-                javaScriptEnabled = true
-                domStorageEnabled = true
-                mediaPlaybackRequiresUserGesture = false
-                cacheMode = WebSettings.LOAD_DEFAULT
-                mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
-            }
+        webView = WebView(this)
+        setContentView(webView)
 
-            // Mantiene la navegacion dentro de la app sin abrir Chrome externo
-            webViewClient = object : WebViewClient() {
-                override fun shouldOverrideUrlLoading(
-                    view: WebView?,
-                    request: WebResourceRequest?
-                ): Boolean {
-                    return false
-                }
-            }
+        val settings: WebSettings = webView.settings
+        settings.javaScriptEnabled = true
+        settings.domStorageEnabled = true
+        settings.mediaPlaybackRequiresUserGesture = false
+        settings.cacheMode = WebSettings.LOAD_DEFAULT
 
-            // Concede acceso al microfono para ondas de voz reales y activacion
-            webChromeClient = object : WebChromeClient() {
-                override fun onPermissionRequest(request: PermissionRequest?) {
-                    runOnUiThread {
-                        request?.grant(request.resources)
-                    }
+        // Puente nativo para que la interfaz web controle apps, Spotify y burbuja
+        webView.addJavascriptInterface(NeythanAndroidBridge(this), "NeythanNativo")
+
+        webView.webViewClient = WebViewClient()
+        webView.webChromeClient = object : WebChromeClient() {
+            override fun onPermissionRequest(request: PermissionRequest) {
+                runOnUiThread {
+                    request.grant(request.resources)
                 }
             }
         }
 
-        setContentView(webView)
         verificarPermisosEIniciar()
     }
 
     private fun verificarPermisosEIniciar() {
-        val permisosNecesarios = mutableListOf(Manifest.permission.RECORD_AUDIO)
+        val permisosFaltantes = mutableListOf<String>()
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            permisosFaltantes.add(Manifest.permission.RECORD_AUDIO)
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            permisosNecesarios.add(Manifest.permission.POST_NOTIFICATIONS)
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                permisosFaltantes.add(Manifest.permission.POST_NOTIFICATIONS)
+            }
         }
 
-        val faltantes = permisosNecesarios.filter {
-            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
-        }
-
-        if (faltantes.isEmpty()) {
-            iniciarServicioSegundoPlano()
-            cargarInterfazNeythan()
+        if (permisosFaltantes.isNotEmpty()) {
+            ActivityCompat.requestPermissions(this, permisosFaltantes.toTypedArray(), AUDIO_PERMISSION_CODE)
         } else {
-            requestPermissionLauncher.launch(faltantes.toTypedArray())
+            iniciarServiciosYCargar()
         }
     }
 
-    private fun iniciarServicioSegundoPlano() {
-        val serviceIntent = Intent(this, NeythanBackgroundService::class.java).apply {
-            putExtra("SERVER_URL", SERVER_URL)
-        }
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        iniciarServiciosYCargar()
+    }
+
+    private fun iniciarServiciosYCargar() {
+        val bgIntent = Intent(this, NeythanBackgroundService::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(serviceIntent)
+            startForegroundService(bgIntent)
         } else {
-            startService(serviceIntent)
+            startService(bgIntent)
         }
-    }
-
-    private fun cargarInterfazNeythan() {
         webView.loadUrl(SERVER_URL)
     }
 
-    override fun onDestroy() {
-        webView.destroy()
-        super.onDestroy()
+    inner class NeythanAndroidBridge(private val context: Context) {
+
+        @JavascriptInterface
+        fun reproducirSpotify(cancionOArtista: String) {
+            runOnUiThread {
+                try {
+                    val query = Uri.encode(cancionOArtista)
+                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse("spotify:search:$query"))
+                    intent.putExtra(Intent.EXTRA_REFERRER, Uri.parse("android-app://${context.packageName}"))
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    context.startActivity(intent)
+                } catch (e: Exception) {
+                    val webIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://open.spotify.com/search/${Uri.encode(cancionOArtista)}"))
+                    webIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    context.startActivity(webIntent)
+                }
+            }
+        }
+
+        @JavascriptInterface
+        fun abrirAplicacion(nombrePaquete: String) {
+            runOnUiThread {
+                val launchIntent = context.packageManager.getLaunchIntentForPackage(nombrePaquete)
+                if (launchIntent != null) {
+                    launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    context.startActivity(launchIntent)
+                } else {
+                    Toast.makeText(context, "Aplicacion no encontrada en el dispositivo", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+
+        @JavascriptInterface
+        fun activarBurbujaFlotante() {
+            runOnUiThread {
+                if (!Settings.canDrawOverlays(context)) {
+                    Toast.makeText(context, "Autorice mostrar sobre otras apps para activar el nucleo flotante", Toast.LENGTH_LONG).show()
+                    val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${context.packageName}"))
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    context.startActivity(intent)
+                } else {
+                    val floatIntent = Intent(context, FloatingService::class.java)
+                    context.startService(floatIntent)
+                }
+            }
+        }
     }
 }
