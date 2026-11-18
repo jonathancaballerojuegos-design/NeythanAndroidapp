@@ -1,101 +1,115 @@
 package com.jonathan.neythan
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.net.Uri
+import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
-import android.provider.Settings
-import android.widget.Button
-import android.widget.LinearLayout
-import android.widget.TextView
-import android.widget.Toast
-import androidx.appcompat.app.AppCompatActivity
-import androidx.core.app.ActivityCompat
+import android.view.WindowManager
+import android.webkit.PermissionRequest
+import android.webkit.WebChromeClient
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import androidx.activity.ComponentActivity
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 
-class MainActivity : AppCompatActivity() {
+class MainActivity : ComponentActivity() {
 
-    private val PERMISOS_CODE = 101
+    private lateinit var webView: WebView
+
+    // URL de su servidor activo en Render
+    private val RENDER_SERVER_URL = "https://neythanproyect-cloud.onrender.com"
+
+    private val requestPermissionsLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        val micGranted = permissions[Manifest.permission.RECORD_AUDIO] ?: false
+        if (micGranted) {
+            iniciarServicioSegundoPlano()
+            cargarInterfazNeythan()
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val layout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(48, 80, 48, 80)
-            setBackgroundColor(0xFF050811.toInt())
-        }
+        // Fondo negro puro AMOLED y pantalla activa durante interacción
+        window.decorView.setBackgroundColor(Color.BLACK)
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        val titulo = TextView(this).apply {
-            text = "NEYTHAN ANDROID"
-            textSize = 24f
-            setTextColor(0xFF00E5FF.toInt())
-        }
+        webView = WebView(this)
+        setContentView(webView)
 
-        val desc = TextView(this).apply {
-            text = "\n1. Concede permisos de Micrófono, Cámara y Notificaciones.\n2. Activa 'Mostrar sobre otras apps'.\n3. Inicia el asistente flotante en segundo plano."
-            textSize = 15f
-            setTextColor(0xFFE0F7FA.toInt())
-        }
+        configurarWebView()
+        verificarPermisos()
+    }
 
-        val btnPermisos = Button(this).apply {
-            text = "Conceder Permisos Base"
-            setOnClickListener { solicitarPermisosBase() }
-        }
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun configurarWebView() {
+        webView.setBackgroundColor(Color.BLACK)
 
-        val btnOverlay = Button(this).apply {
-            text = "Activar Superposición en Pantalla"
-            setOnClickListener {
-                if (!Settings.canDrawOverlays(this@MainActivity)) {
-                    val intent = Intent(
-                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                        Uri.parse("package:$packageName")
-                    )
-                    startActivity(intent)
-                } else {
-                    Toast.makeText(this@MainActivity, "Superposición ya activada", Toast.LENGTH_SHORT).show()
-                }
+        val settings: WebSettings = webView.settings
+        settings.javaScriptEnabled = true
+        settings.domStorageEnabled = true
+        settings.mediaPlaybackRequiresUserGesture = false
+        settings.cacheMode = WebSettings.LOAD_DEFAULT
+        settings.allowFileAccess = true
+
+        webView.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
+                return false
             }
         }
 
-        val btnIniciar = Button(this).apply {
-            text = "Iniciar Neythan Flotante"
-            setOnClickListener { iniciarServicioFlotante() }
+        // Autoriza automáticamente el micrófono para las ondas de voz y wake word
+        webView.webChromeClient = object : WebChromeClient() {
+            override fun onPermissionRequest(request: PermissionRequest) {
+                runOnUiThread {
+                    request.grant(request.resources)
+                }
+            }
         }
-
-        layout.addView(titulo)
-        layout.addView(desc)
-        layout.addView(btnPermisos)
-        layout.addView(btnOverlay)
-        layout.addView(btnIniciar)
-        setContentView(layout)
     }
 
-    private fun solicitarPermisosBase() {
-        val permisos = mutableListOf(
-            Manifest.permission.RECORD_AUDIO,
-            Manifest.permission.CAMERA
-        )
+    private fun verificarPermisos() {
+        val permisosNecesarios = mutableListOf(Manifest.permission.RECORD_AUDIO)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            permisos.add(Manifest.permission.POST_NOTIFICATIONS)
+            permisosNecesarios.add(Manifest.permission.POST_NOTIFICATIONS)
         }
-        ActivityCompat.requestPermissions(this, permisos.toTypedArray(), PERMISOS_CODE)
+
+        val faltantes = permisosNecesarios.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+
+        if (faltantes.isEmpty()) {
+            iniciarServicioSegundoPlano()
+            cargarInterfazNeythan()
+        } else {
+            requestPermissionsLauncher.launch(faltantes.toTypedArray())
+        }
     }
 
-    private fun iniciarServicioFlotante() {
-        if (!Settings.canDrawOverlays(this)) {
-            Toast.makeText(this, "Primero activa la superposición sobre otras apps", Toast.LENGTH_LONG).show()
-            return
+    private fun cargarInterfazNeythan() {
+        if (webView.url == null) {
+            webView.loadUrl(RENDER_SERVER_URL)
         }
-        val intent = Intent(this, FloatingService::class.java)
+    }
+
+    private fun iniciarServicioSegundoPlano() {
+        val serviceIntent = Intent(this, NeythanBackgroundService::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(intent)
+            startForegroundService(serviceIntent)
         } else {
-            startService(intent)
+            startService(serviceIntent)
         }
-        Toast.makeText(this, "Neythan activo en segundo plano", Toast.LENGTH_SHORT).show()
-        moveTaskToBack(true)
+    }
+
+    override fun onDestroy() {
+        webView.destroy()
+        super.onDestroy()
     }
 }
