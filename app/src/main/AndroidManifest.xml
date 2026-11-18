@@ -2,6 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- Permisos de Red, Audio y Ejecución en Segundo Plano -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
@@ -10,23 +11,23 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <application
         android:allowBackup="true"
-        android:icon="@mipmap/ic_launcher"
+        android:icon="@android:drawable/sym_def_app_icon"
         android:label="Neythan"
-        android:roundIcon="@mipmap/ic_launcher_round"
+        android:roundIcon="@android:drawable/sym_def_app_icon"
         android:supportsRtl="true"
         android:theme="@style/Theme.AppCompat.NoActionBar"
         android:usesCleartextTraffic="true"
         tools:targetApi="34">
 
+        <!-- Actividad Principal -->
         <activity
-            android:name="com.jonathan.neythan.MainActivity"
+            android:name=".MainActivity"
             android:exported="true"
-            android:launchMode="singleTop"
             android:screenOrientation="portrait"
             android:configChanges="orientation|screenSize|keyboardHidden">
             <intent-filter>
@@ -35,14 +36,16 @@
             </intent-filter>
         </activity>
 
+        <!-- Servicio Ligero en Segundo Plano -->
         <service
-            android:name="com.jonathan.neythan.NeythanBackgroundService"
+            android:name=".NeythanBackgroundService"
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
+        <!-- Servicio Flotante Existente (Compatibilidad) -->
         <service
-            android:name="com.jonathan.neythan.FloatingService"
+            android:name=".FloatingService"
             android:enabled="true"
             android:exported="false" />
 
