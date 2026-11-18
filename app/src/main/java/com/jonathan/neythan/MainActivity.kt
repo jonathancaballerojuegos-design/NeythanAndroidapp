@@ -5,11 +5,12 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.Color
+import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.speech.tts.TextToSpeech
 import android.webkit.JavascriptInterface
 import android.webkit.PermissionRequest
 import android.webkit.WebChromeClient
@@ -20,39 +21,47 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import org.json.JSONArray
+import java.util.Locale
 
-class MainActivity : AppCompatActivity() {
+class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private lateinit var webView: WebView
+    private var tts: TextToSpeech? = null
+    private var ttsReady = false
+
+    // URL de su servidor en Render
     private val SERVER_URL = "https://neythanproyect-cloud.onrender.com"
-    private val PERMISSION_REQUEST_CODE = 1001
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        window.statusBarColor = Color.BLACK
-        window.navigationBarColor = Color.BLACK
+        // Inicializar motor nativo de voz en español
+        tts = TextToSpeech(this, this)
+
+        // Asegurar volumen multimedia audible al iniciar
+        val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val currentVol = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+        val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+        if (currentVol < maxVol / 3) {
+            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, (maxVol * 0.75).toInt(), 0)
+        }
+
+        requestAllPermissions()
+        startBackgroundService()
 
         webView = WebView(this)
-        webView.setBackgroundColor(Color.BLACK)
         setContentView(webView)
 
         val settings: WebSettings = webView.settings
         settings.javaScriptEnabled = true
         settings.domStorageEnabled = true
         settings.mediaPlaybackRequiresUserGesture = false
-        settings.cacheMode = WebSettings.LOAD_DEFAULT
+        settings.cacheMode = WebSettings.LOAD_NO_CACHE
 
-        webView.addJavascriptInterface(NeythanAndroidBridge(this), "NeythanNativo")
+        webView.addJavascriptInterface(NeythanAndroidBridge(), "NeythanAndroid")
 
-        webView.webViewClient = object : WebViewClient() {
-            override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
-                return false
-            }
-        }
-
+        webView.webViewClient = WebViewClient()
         webView.webChromeClient = object : WebChromeClient() {
             override fun onPermissionRequest(request: PermissionRequest?) {
                 runOnUiThread {
@@ -61,123 +70,118 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        verificarPermisosEIniciar()
-    }
-
-    private fun verificarPermisosEIniciar() {
-        val permisos = mutableListOf(Manifest.permission.RECORD_AUDIO)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            permisos.add(Manifest.permission.POST_NOTIFICATIONS)
-        }
-
-        val faltantes = permisos.filter {
-            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
-        }
-
-        if (faltantes.isNotEmpty()) {
-            ActivityCompat.requestPermissions(this, faltantes.toTypedArray(), PERMISSION_REQUEST_CODE)
-        } else {
-            iniciarServiciosYCargar()
-        }
-    }
-
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == PERMISSION_REQUEST_CODE) {
-            iniciarServiciosYCargar()
-        }
-    }
-
-    private fun iniciarServiciosYCargar() {
-        val bgIntent = Intent(this, NeythanBackgroundService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(bgIntent)
-        } else {
-            startService(bgIntent)
-        }
-
-        if (!Settings.canDrawOverlays(this)) {
-            Toast.makeText(this, "Active permiso de burbuja flotante para Neythan", Toast.LENGTH_LONG).show()
-            val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
-            startActivity(intent)
-        } else {
-            startService(Intent(this, FloatingService::class.java))
-        }
-
         webView.loadUrl(SERVER_URL)
     }
 
-    inner class NeythanAndroidBridge(private val context: Context) {
+    override fun onInit(status: Int) {
+        if (status == TextToSpeech.SUCCESS) {
+            val result = tts?.setLanguage(Locale("es", "ES"))
+            if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
+                tts?.setLanguage(Locale.getDefault())
+            }
+            tts?.setPitch(0.95f)
+            tts?.setSpeechRate(1.05f)
+            ttsReady = true
+        }
+    }
+
+    private fun requestAllPermissions() {
+        val perms = mutableListOf(Manifest.permission.RECORD_AUDIO)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            perms.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        val missing = perms.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (missing.isNotEmpty()) {
+            ActivityCompat.requestPermissions(this, missing.toTypedArray(), 101)
+        }
+    }
+
+    private fun startBackgroundService() {
+        val intent = Intent(this, NeythanBackgroundService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent)
+        } else {
+            startService(intent)
+        }
+    }
+
+    inner class NeythanAndroidBridge {
 
         @JavascriptInterface
-        fun reproducirSpotify(cancion: String) {
+        fun speak(text: String) {
+            runOnUiThread {
+                if (ttsReady && text.isNotBlank()) {
+                    tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "NEYTHAN_UTTERANCE")
+                }
+            }
+        }
+
+        @JavascriptInterface
+        fun stopSpeak() {
+            runOnUiThread {
+                tts?.stop()
+            }
+        }
+
+        @JavascriptInterface
+        fun playSpotify(query: String) {
             runOnUiThread {
                 try {
-                    val uri = Uri.parse("spotify:search:${Uri.encode(cancion)}")
-                    val intent = Intent(Intent.ACTION_VIEW, uri).apply {
-                        setPackage("com.spotify.music")
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                    }
-                    context.startActivity(intent)
+                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse("spotify:search:$query"))
+                    intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                    startActivity(intent)
                 } catch (e: Exception) {
-                    Toast.makeText(context, "Spotify no está instalado", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, "Spotify no está instalado", Toast.LENGTH_SHORT).show()
                 }
             }
         }
 
         @JavascriptInterface
-        fun abrirRedSocial(red: String, mensaje: String) {
+        fun startBubble() {
             runOnUiThread {
-                try {
-                    when (red.lowercase()) {
-                        "whatsapp" -> {
-                            val intent = Intent(Intent.ACTION_SEND).apply {
-                                type = "text/plain"
-                                setPackage("com.whatsapp")
-                                putExtra(Intent.EXTRA_TEXT, mensaje)
-                                flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                            }
-                            context.startActivity(intent)
-                        }
-                        "instagram" -> {
-                            val launch = context.packageManager.getLaunchIntentForPackage("com.instagram.android")
-                            if (launch != null) {
-                                launch.flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                                context.startActivity(launch)
-                            }
-                        }
-                    }
-                } catch (e: Exception) {
-                    Toast.makeText(context, "No se pudo abrir $red", Toast.LENGTH_SHORT).show()
-                }
-            }
-        }
-
-        @JavascriptInterface
-        fun obtenerNotificacionesRecientes(): String {
-            return JSONArray(NeythanNotificationListener.historialNotificaciones).toString()
-        }
-
-        @JavascriptInterface
-        fun abrirAjustesNotificaciones() {
-            runOnUiThread {
-                val intent = Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS).apply {
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                }
-                context.startActivity(intent)
-            }
-        }
-
-        @JavascriptInterface
-        fun alternarBurbuja(activar: Boolean) {
-            runOnUiThread {
-                val intent = Intent(context, FloatingService::class.java)
-                if (activar && Settings.canDrawOverlays(context)) {
-                    context.startService(intent)
+                if (!Settings.canDrawOverlays(this@MainActivity)) {
+                    val intent = Intent(
+                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        Uri.parse("package:$packageName")
+                    )
+                    startActivity(intent)
                 } else {
-                    context.stopService(intent)
+                    startService(Intent(this@MainActivity, FloatingService::class.java))
                 }
             }
         }
+
+        @JavascriptInterface
+        fun getNotifications(): String {
+            return NeythanNotificationListener.obtenerResumenNotificaciones()
+        }
+
+        @JavascriptInterface
+        fun openApp(appName: String) {
+            runOnUiThread {
+                val pkg = when (appName.lowercase()) {
+                    "whatsapp" -> "com.whatsapp"
+                    "instagram" -> "com.instagram.android"
+                    "spotify" -> "com.spotify.music"
+                    else -> ""
+                }
+                if (pkg.isNotEmpty()) {
+                    val launchIntent = packageManager.getLaunchIntentForPackage(pkg)
+                    if (launchIntent != null) {
+                        startActivity(launchIntent)
+                    } else {
+                        Toast.makeText(this@MainActivity, "Aplicación no encontrada: $appName", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+        }
+    }
+
+    override fun onDestroy() {
+        tts?.stop()
+        tts?.shutdown()
+        super.onDestroy()
     }
 }
