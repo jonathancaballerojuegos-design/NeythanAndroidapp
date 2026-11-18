@@ -10,72 +10,74 @@ import android.os.Bundle
 import android.view.WindowManager
 import android.webkit.PermissionRequest
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 
-class MainActivity : ComponentActivity() {
+class MainActivity : AppCompatActivity() {
+
+    // REEMPLAZA ESTA URL POR EL ENLACE EXACTO DE TU SERVICIO EN RENDER (SIN '/' AL FINAL)
+    private val SERVER_URL = "https://neythanproyect-cloud.onrender.com"
 
     private lateinit var webView: WebView
 
-    // URL de su servidor activo en Render
-    private val RENDER_SERVER_URL = "https://neythanproyect-cloud.onrender.com"
-
-    private val requestPermissionsLauncher = registerForActivityResult(
+    private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
-        val micGranted = permissions[Manifest.permission.RECORD_AUDIO] ?: false
-        if (micGranted) {
+        if (permissions[Manifest.permission.RECORD_AUDIO] == true) {
             iniciarServicioSegundoPlano()
             cargarInterfazNeythan()
         }
     }
 
+    @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Fondo negro puro AMOLED y pantalla activa durante interacción
-        window.decorView.setBackgroundColor(Color.BLACK)
+        // Fondo negro puro AMOLED y pantalla activa mientras interactuas
+        window.statusBarColor = Color.BLACK
+        window.navigationBarColor = Color.BLACK
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        webView = WebView(this)
-        setContentView(webView)
-
-        configurarWebView()
-        verificarPermisos()
-    }
-
-    @SuppressLint("SetJavaScriptEnabled")
-    private fun configurarWebView() {
-        webView.setBackgroundColor(Color.BLACK)
-
-        val settings: WebSettings = webView.settings
-        settings.javaScriptEnabled = true
-        settings.domStorageEnabled = true
-        settings.mediaPlaybackRequiresUserGesture = false
-        settings.cacheMode = WebSettings.LOAD_DEFAULT
-        settings.allowFileAccess = true
-
-        webView.webViewClient = object : WebViewClient() {
-            override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
-                return false
+        webView = WebView(this).apply {
+            setBackgroundColor(Color.BLACK)
+            settings.apply {
+                javaScriptEnabled = true
+                domStorageEnabled = true
+                mediaPlaybackRequiresUserGesture = false
+                cacheMode = WebSettings.LOAD_DEFAULT
+                mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
             }
-        }
 
-        // Autoriza automáticamente el micrófono para las ondas de voz y wake word
-        webView.webChromeClient = object : WebChromeClient() {
-            override fun onPermissionRequest(request: PermissionRequest) {
-                runOnUiThread {
-                    request.grant(request.resources)
+            // Mantiene la navegacion dentro de la app sin abrir Chrome externo
+            webViewClient = object : WebViewClient() {
+                override fun shouldOverrideUrlLoading(
+                    view: WebView?,
+                    request: WebResourceRequest?
+                ): Boolean {
+                    return false
+                }
+            }
+
+            // Concede acceso al microfono para ondas de voz reales y activacion
+            webChromeClient = object : WebChromeClient() {
+                override fun onPermissionRequest(request: PermissionRequest?) {
+                    runOnUiThread {
+                        request?.grant(request.resources)
+                    }
                 }
             }
         }
+
+        setContentView(webView)
+        verificarPermisosEIniciar()
     }
 
-    private fun verificarPermisos() {
+    private fun verificarPermisosEIniciar() {
         val permisosNecesarios = mutableListOf(Manifest.permission.RECORD_AUDIO)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             permisosNecesarios.add(Manifest.permission.POST_NOTIFICATIONS)
@@ -89,23 +91,23 @@ class MainActivity : ComponentActivity() {
             iniciarServicioSegundoPlano()
             cargarInterfazNeythan()
         } else {
-            requestPermissionsLauncher.launch(faltantes.toTypedArray())
-        }
-    }
-
-    private fun cargarInterfazNeythan() {
-        if (webView.url == null) {
-            webView.loadUrl(RENDER_SERVER_URL)
+            requestPermissionLauncher.launch(faltantes.toTypedArray())
         }
     }
 
     private fun iniciarServicioSegundoPlano() {
-        val serviceIntent = Intent(this, NeythanBackgroundService::class.java)
+        val serviceIntent = Intent(this, NeythanBackgroundService::class.java).apply {
+            putExtra("SERVER_URL", SERVER_URL)
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(serviceIntent)
         } else {
             startService(serviceIntent)
         }
+    }
+
+    private fun cargarInterfazNeythan() {
+        webView.loadUrl(SERVER_URL)
     }
 
     override fun onDestroy() {
