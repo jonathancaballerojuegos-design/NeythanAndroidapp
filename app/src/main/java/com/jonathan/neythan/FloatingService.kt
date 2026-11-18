@@ -1,5 +1,6 @@
 package com.jonathan.neythan
 
+import android.annotation.SuppressLint
 import android.app.Service
 import android.content.Intent
 import android.graphics.PixelFormat
@@ -7,89 +8,85 @@ import android.os.Build
 import android.os.IBinder
 import android.view.Gravity
 import android.view.MotionEvent
-import android.view.View
 import android.view.WindowManager
 import android.widget.ImageView
 
 class FloatingService : Service() {
 
     private lateinit var windowManager: WindowManager
-    private lateinit var floatingView: ImageView
+    private lateinit var bubbleView: ImageView
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    @SuppressLint("ClickableViewAccessibility")
     override fun onCreate() {
         super.onCreate()
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
 
-        floatingView = ImageView(this)
-        floatingView.setImageResource(R.drawable.nucleo_icono)
+        bubbleView = ImageView(this).apply {
+            setImageResource(R.drawable.nucleo_icono)
+        }
 
-        val sizePx = (64 * resources.displayMetrics.density).toInt()
         val layoutFlag = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
         } else {
+            @Suppress("DEPRECATION")
             WindowManager.LayoutParams.TYPE_PHONE
         }
 
         val params = WindowManager.LayoutParams(
-            sizePx,
-            sizePx,
+            135, 135,
             layoutFlag,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
             PixelFormat.TRANSLUCENT
-        )
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = 20
+            y = 300
+        }
 
-        params.gravity = Gravity.TOP or Gravity.START
-        params.x = 40
-        params.y = 250
+        var initialX = 0
+        var initialY = 0
+        var initialTouchX = 0f
+        var initialTouchY = 0f
 
-        floatingView.setOnTouchListener(object : View.OnTouchListener {
-            private var initialX = 0
-            private var initialY = 0
-            private var initialTouchX = 0f
-            private var initialTouchY = 0f
-            private var moved = false
-
-            override fun onTouch(v: View, event: MotionEvent): Boolean {
-                when (event.action) {
-                    MotionEvent.ACTION_DOWN -> {
-                        initialX = params.x
-                        initialY = params.y
-                        initialTouchX = event.rawX
-                        initialTouchY = event.rawY
-                        moved = false
-                        return true
-                    }
-                    MotionEvent.ACTION_MOVE -> {
-                        val dx = (event.rawX - initialTouchX).toInt()
-                        val dy = (event.rawY - initialTouchY).toInt()
-                        if (Math.abs(dx) > 10 || Math.abs(dy) > 10) moved = true
-                        params.x = initialX + dx
-                        params.y = initialY + dy
-                        windowManager.updateViewLayout(floatingView, params)
-                        return true
-                    }
-                    MotionEvent.ACTION_UP -> {
-                        if (!moved) {
-                            val openIntent = Intent(this@FloatingService, MainActivity::class.java)
-                            openIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                            startActivity(openIntent)
-                        }
-                        return true
-                    }
+        bubbleView.setOnTouchListener { _, event ->
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    initialX = params.x
+                    initialY = params.y
+                    initialTouchX = event.rawX
+                    initialTouchY = event.rawY
+                    true
                 }
-                return false
+                MotionEvent.ACTION_MOVE -> {
+                    params.x = initialX + (event.rawX - initialTouchX).toInt()
+                    params.y = initialY + (event.rawY - initialTouchY).toInt()
+                    windowManager.updateViewLayout(bubbleView, params)
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    val diffX = Math.abs(event.rawX - initialTouchX)
+                    val diffY = Math.abs(event.rawY - initialTouchY)
+                    if (diffX < 15 && diffY < 15) {
+                        val launchIntent = Intent(this, MainActivity::class.java).apply {
+                            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                        }
+                        startActivity(launchIntent)
+                    }
+                    true
+                }
+                else -> false
             }
-        })
+        }
 
-        windowManager.addView(floatingView, params)
+        windowManager.addView(bubbleView, params)
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        if (::floatingView.isInitialized) {
-            windowManager.removeView(floatingView)
+        if (::bubbleView.isInitialized) {
+            windowManager.removeView(bubbleView)
         }
     }
 }
