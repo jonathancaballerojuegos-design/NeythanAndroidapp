@@ -37,7 +37,7 @@ import java.net.URL
 import java.util.Locale
 import java.util.concurrent.Executors
 
-class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
+class MainActivity : android.app.Activity(){, TextToSpeech.OnInitListener {
     companion object {
         const val SERVER_URL = "https://neythanproyect-cloud.onrender.com"
     }
