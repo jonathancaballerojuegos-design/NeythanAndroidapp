@@ -25,6 +25,7 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import org.json.JSONObject
@@ -57,8 +58,27 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private var estaHablando = false
     private var bocaAbiertaFrame = false
     private var conversacionActivaHasta = 0L
+    private var formaFijadaManual = false
 
     private val cacheSprites = HashMap<String, Bitmap?>()
+
+    private val formasDisponibles = listOf(
+        Pair("reposo_feliz", "Reposo"),
+        Pair("saltando_azul", "Saltando"),
+        Pair("corriendo_rapido", "Corriendo"),
+        Pair("recargando_bateria", "Recargando"),
+        Pair("celebrando_confeti", "Celebrando"),
+        Pair("enamorado_corazones", "Enamorado"),
+        Pair("malicioso_cian", "Astuto"),
+        Pair("asco_verde", "Asco"),
+        Pair("gafas_oscuras", "Gafas Cool"),
+        Pair("pensando", "Analizando"),
+        Pair("furia_roja", "Alerta Roja"),
+        Pair("durmiendo_reposo", "Descanso"),
+        Pair("angulo_perfil_1", "Perfil"),
+        Pair("angulo_espalda_1", "Espalda")
+    )
+    private var indiceFormaActual = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -77,7 +97,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private fun iniciarMotorVoz() {
         try {
             tts = TextToSpeech(this, this, "com.google.android.tts")
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             tts = TextToSpeech(this, this)
         }
     }
@@ -103,7 +123,9 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                         estaHablando = false
                         bocaAbiertaFrame = false
                         estadoActual = "ESCUCHANDO"
-                        spriteActualNombre = "escuchando_mano_oido"
+                        if (!formaFijadaManual) {
+                            spriteActualNombre = "escuchando_mano_oido"
+                        }
                         conversacionActivaHasta = System.currentTimeMillis() + 18000L
                         reanudarEscucha(350L)
                     }
@@ -185,7 +207,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 override fun onReadyForSpeech(params: Bundle?) {
                     if (!estaHablando) {
                         estadoActual = "ESCUCHANDO"
-                        if (spriteActualNombre == "reposo_feliz") {
+                        if (!formaFijadaManual && spriteActualNombre == "reposo_feliz") {
                             spriteActualNombre = "escuchando_mano_oido"
                         }
                     }
@@ -269,7 +291,9 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
         if (!contieneWakeWord && !enVentanaActiva) {
             estadoActual = "REPOSO"
-            spriteActualNombre = "reposo_feliz"
+            if (!formaFijadaManual) {
+                spriteActualNombre = "reposo_feliz"
+            }
             reanudarEscucha(250L)
             return
         }
@@ -286,7 +310,9 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
         subtituloPantalla = "Usted: $orden"
         estadoActual = "PROCESANDO"
-        spriteActualNombre = "pensando"
+        if (!formaFijadaManual) {
+            spriteActualNombre = "pensando"
+        }
 
         if (ejecutarComandoLocalSiAplica(orden)) {
             return
@@ -297,6 +323,18 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     private fun ejecutarComandoLocalSiAplica(orden: String): Boolean {
         val lower = orden.lowercase(Locale.getDefault())
+
+        if (lower.contains("cambia de forma") || lower.contains("siguiente forma") || lower.contains("otra forma")) {
+            siguienteFormaManual(anunciarConVoz = true)
+            return true
+        }
+
+        if (lower.contains("forma original") || lower.contains("modo automático") || lower.contains("vuelve a la normalidad")) {
+            formaFijadaManual = false
+            indiceFormaActual = 0
+            hablar("Volviendo a mi forma base y control automático de expresiones, señor.", "reposo_feliz")
+            return true
+        }
 
         if (lower.contains("spotify") || lower.contains("pon música") || lower.contains("reproduce")) {
             val busqueda = lower
@@ -339,6 +377,19 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         }
 
         return false
+    }
+
+    private fun siguienteFormaManual(anunciarConVoz: Boolean) {
+        indiceFormaActual = (indiceFormaActual + 1) % formasDisponibles.size
+        val (nombreSprite, etiqueta) = formasDisponibles[indiceFormaActual]
+        formaFijadaManual = (indiceFormaActual != 0)
+        spriteActualNombre = nombreSprite
+        if (anunciarConVoz) {
+            hablar("Adoptando forma: $etiqueta, señor.", nombreSprite)
+        } else {
+            subtituloPantalla = "Forma activa: $etiqueta"
+            hudView.invalidate()
+        }
     }
 
     private fun enviarAlServidorNube(mensajeUsuario: String) {
@@ -392,6 +443,9 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     }
 
     private fun elegirSpritePorContexto(respuesta: String, emocion: String, spriteApi: String): String {
+        if (formaFijadaManual) {
+            return spriteActualNombre
+        }
         if (spriteApi.isNotEmpty() && obtenerBitmapSprite(spriteApi) != null) {
             return spriteApi
         }
@@ -414,7 +468,9 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private fun hablar(texto: String, spritePrevio: String) {
         detenerEscuchaTemporal()
         subtituloPantalla = texto
-        spriteActualNombre = spritePrevio
+        if (!formaFijadaManual) {
+            spriteActualNombre = spritePrevio
+        }
         estadoActual = "HABLANDO"
 
         solicitarFocoAudioMultimedia()
@@ -513,8 +569,27 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             textSize = 40f
             textAlign = Paint.Align.CENTER
         }
+        private val paintAyuda = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.parseColor("#80DEEA")
+            textSize = 28f
+            textAlign = Paint.Align.CENTER
+        }
         private val paintNucleo = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.FILL
+        }
+
+        override fun onTouchEvent(event: MotionEvent): Boolean {
+            if (event.action == MotionEvent.ACTION_UP) {
+                val cy = height * 0.45f
+                val radioToque = width.coerceAtMost(height) * 0.36f
+                val dx = event.x - (width / 2f)
+                val dy = event.y - cy
+                if ((dx * dx + dy * dy) <= (radioToque * radioToque)) {
+                    siguienteFormaManual(anunciarConVoz = false)
+                    return true
+                }
+            }
+            return super.onTouchEvent(event)
         }
 
         override fun onDraw(canvas: Canvas) {
@@ -543,9 +618,11 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             paintAro.alpha = 140
             canvas.drawCircle(cx, cy, radioBase, paintAro)
 
+            val esExpresionEspecial = spriteActualNombre != "reposo_feliz" && spriteActualNombre != "escuchando_mano_oido"
+
             val nombreDibujar = when {
-                estaHablando && bocaAbiertaFrame -> "hablando_boca_abierta"
-                estaHablando && !bocaAbiertaFrame -> "hablando_boca_cerrada"
+                estaHablando && !esExpresionEspecial && bocaAbiertaFrame -> "hablando_boca_abierta"
+                estaHablando && !esExpresionEspecial && !bocaAbiertaFrame -> "hablando_boca_cerrada"
                 else -> spriteActualNombre
             }
 
@@ -571,7 +648,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 canvas.drawCircle(cx, cy + offsetMovimientoY, radioBase * 0.55f, paintNucleo)
             }
 
-            dibujarSubtituloMultilinea(canvas, subtituloPantalla, cx, height * 0.80f)
+            dibujarSubtituloMultilinea(canvas, subtituloPantalla, cx, height * 0.78f)
+            canvas.drawText("Toque al avatar o diga «cambia de forma»", cx, height * 0.94f, paintAyuda)
         }
 
         private fun dibujarSubtituloMultilinea(canvas: Canvas, texto: String, x: Float, yInicial: Float) {
