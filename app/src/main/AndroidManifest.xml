@@ -6,34 +6,33 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
-    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
-    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <queries>
         <package android:name="com.spotify.music" />
         <package android:name="com.whatsapp" />
         <package android:name="com.instagram.android" />
         <intent>
-            <action android:name="android.intent.action.TTS_SERVICE" />
+            <action android:name="android.speech.RecognitionService" />
         </intent>
         <intent>
-            <action android:name="android.speech.RecognitionService" />
+            <action android:name="android.intent.action.TTS_SERVICE" />
         </intent>
     </queries>
 
     <application
         android:allowBackup="true"
-        android:icon="@mipmap/ic_launcher"
+        android:icon="@android:drawable/ic_dialog_info"
+        android:roundIcon="@android:drawable/ic_dialog_info"
         android:label="Neythan"
-        android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/Theme.AppCompat.NoActionBar"
-        android:usesCleartextTraffic="true"
-        tools:targetApi="34">
+        android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
+        android:usesCleartextTraffic="true">
 
         <activity
             android:name=".MainActivity"
@@ -49,12 +48,7 @@
         <service
             android:name=".FloatingService"
             android:enabled="true"
-            android:exported="false"
-            android:foregroundServiceType="specialUse">
-            <property
-                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="Núcleo flotante interactivo del asistente Neythan" />
-        </service>
+            android:exported="false" />
 
         <service
             android:name=".NeythanBackgroundService"
@@ -64,13 +58,14 @@
 
         <service
             android:name=".NeythanNotificationListener"
-            android:exported="true"
             android:label="Neythan Notificaciones"
-            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
+            android:exported="true">
             <intent-filter>
                 <action android:name="android.service.notification.NotificationListenerService" />
             </intent-filter>
         </service>
 
     </application>
+
 </manifest>
