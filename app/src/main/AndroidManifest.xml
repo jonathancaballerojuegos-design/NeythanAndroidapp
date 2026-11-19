@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -9,30 +10,33 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <queries>
         <package android:name="com.spotify.music" />
         <package android:name="com.whatsapp" />
         <package android:name="com.instagram.android" />
         <intent>
-            <action android:name="android.intent.action.VIEW" />
-            <data android:scheme="https" />
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
         </intent>
     </queries>
 
     <application
         android:allowBackup="true"
-        android:icon="@drawable/nucleo_icono"
-        android:roundIcon="@drawable/nucleo_icono"
+        android:icon="@mipmap/ic_launcher"
         android:label="Neythan"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.AppCompat.NoActionBar"
-        android:usesCleartextTraffic="true">
+        android:usesCleartextTraffic="true"
+        tools:targetApi="34">
 
         <activity
-            android:name="com.jonathan.neythan.MainActivity"
+            android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTask"
             android:screenOrientation="portrait">
@@ -43,21 +47,26 @@
         </activity>
 
         <service
-            android:name="com.jonathan.neythan.NeythanBackgroundService"
+            android:name=".FloatingService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="microphone|dataSync" />
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Núcleo flotante interactivo del asistente Neythan" />
+        </service>
 
         <service
-            android:name="com.jonathan.neythan.FloatingService"
+            android:name=".NeythanBackgroundService"
             android:enabled="true"
-            android:exported="false" />
+            android:exported="false"
+            android:foregroundServiceType="dataSync|microphone" />
 
         <service
-            android:name="com.jonathan.neythan.NeythanNotificationListener"
+            android:name=".NeythanNotificationListener"
+            android:exported="true"
             android:label="Neythan Notificaciones"
-            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
-            android:exported="true">
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
             <intent-filter>
                 <action android:name="android.service.notification.NotificationListenerService" />
             </intent-filter>
