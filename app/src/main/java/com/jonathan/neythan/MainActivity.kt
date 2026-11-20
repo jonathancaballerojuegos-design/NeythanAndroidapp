@@ -47,6 +47,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         // Ejemplo: "AIzaSyD..."
         // =========================================================================
         const val GEMINI_API_KEY = "PON_AQUI_TU_GEMINI_API_KEY"
+        const val SERVER_URL = ""
         private const val REQ_PERMISOS = 1001
     }
 
@@ -67,7 +68,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private var indiceForma = 0
 
     // Memoria de conversacion corta en RAM del telefono (ultimos 12 mensajes)
-    private val historialTurnos = ArrayList<Pair<String, String>>()
+    private val historialChat = ArrayList<Pair<String, String>>()
 
     private val formasDisponibles = listOf(
         "reposo_feliz", "saltando_azul", "corriendo_rapido", "recargando_bateria",
@@ -140,11 +141,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 }
             })
             ttsListo = true
-            if (GEMINI_API_KEY.isBlank() || GEMINI_API_KEY.contains("PON_AQUI")) {
-                hablar("Enlace directo listo, señor, pero falta colocar su clave de Gemini en el código.", "alerta")
-            } else {
-                hablar("Conexión directa con Gemini establecida, señor. Sin servidores intermedios.", "reposo_feliz")
-            }
+            hablar("Enlace directo con Gemini operativo, señor. A sus órdenes.", "reposo_feliz")
         } else {
             subtituloPantalla = "Motor de voz no disponible, modo visual activo."
             reanudarEscucha(1500L)
@@ -353,9 +350,9 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             return true
         }
 
-        if (lower.contains("limpia memoria") || lower.contains("olvida conversación")) {
-            historialTurnos.clear()
-            hablar("Historial de conversación reiniciado, señor.", "reposo_feliz")
+        if (lower.contains("borra memoria") || lower.contains("olvida la conversación")) {
+            historialChat.clear()
+            hablar("Memoria de conversación limpia, señor.", "reposo_feliz")
             return true
         }
 
@@ -382,7 +379,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 val msg = if (busqueda.isNotEmpty()) "Abriendo $busqueda en Spotify, señor." else "Abriendo Spotify, señor."
                 hablar(msg, "celebrando_confeti")
             } catch (_: Exception) {
-                hablar("No encontré la aplicación Spotify instalada, señor.", "alerta")
+                hablar("No encontré la aplicación Spotify instalada en este dispositivo, señor.", "alerta")
             }
             return true
         }
@@ -402,20 +399,17 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         return false
     }
 
-    // =========================================================================
-    // CONEXION DIRECTA A GOOGLE GEMINI API (SIN RENDER NI SERVIDORES INTERMEDIOS)
-    // =========================================================================
     private fun consultarGeminiDirecto(mensajeUsuario: String) {
         val apiKey = GEMINI_API_KEY.trim()
-        if (apiKey.isEmpty() || apiKey.contains("PON_AQUI")) {
-            hablar("Señor, aún no ha pegado su clave GEMINI_API_KEY dentro de MainActivity.kt.", "alerta")
+        if (apiKey.isEmpty() || apiKey == "PON_AQUI_TU_GEMINI_API_KEY") {
+            hablar("Por favor coloque su clave GEMINI_API_KEY en MainActivity, señor.", "alerta")
             return
         }
 
         thread {
             val modelos = listOf("gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash")
-            var exito = false
-            var ultimoError = "No se pudo conectar con Google."
+            var respuestaFinal: String? = null
+            var ultimoError = ""
 
             for (modelo in modelos) {
                 try {
@@ -429,73 +423,60 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                         doOutput = true
                     }
 
-                    val promptSistema = "Eres Neythan, una inteligencia artificial personal estilo J.A.R.V.I.S., leal, brillante y concisa. " +
-                        "Tratas al usuario de señor. Responde en español natural, directo y sin asteriscos ni formato Markdown porque tu respuesta se lee en voz alta. " +
-                        "Limita tus respuestas a 2 o 3 oraciones claras salvo que te pidan una explicación detallada. " +
-                        "Al final de tu respuesta, agrega una etiqueta exacta entre corchetes indicando tu emoción visual: " +
-                        "[reposo_feliz], [saltando_azul], [corriendo_rapido], [pensando], [furia_roja], [enamorado_corazones], [malicioso_cian], [asco_verde], [celebrando_confeti]."
-
-                    val contentsArray = JSONArray()
-
-                    for ((rol, texto) in historialTurnos) {
-                        val partObj = JSONObject().put("text", texto)
-                        val partsArr = JSONArray().put(partObj)
-                        contentsArray.put(JSONObject().put("role", rol).put("parts", partsArr))
+                    val instruccionSistema = JSONObject().apply {
+                        put("parts", JSONArray().put(JSONObject().put(
+                            "text",
+                            "Eres NEYTHAN, un asistente de inteligencia artificial leal, preciso, elegante y con estilo J.A.R.V.I.S. " +
+                            "Dirígete siempre al usuario como 'señor'. Responde en español de forma clara, natural y concisa " +
+                            "(máximo 2 o 3 oraciones cortas ideales para leer en voz alta, sin asteriscos ni formato Markdown)."
+                        )))
                     }
 
-                    val userParts = JSONArray().put(JSONObject().put("text", mensajeUsuario))
-                    contentsArray.put(JSONObject().put("role", "user").put("parts", userParts))
+                    val contentsArray = JSONArray()
+                    for ((rol, texto) in historialChat) {
+                        val msgObj = JSONObject().apply {
+                            put("role", rol)
+                            put("parts", JSONArray().put(JSONObject().put("text", texto)))
+                        }
+                        contentsArray.put(msgObj)
+                    }
+                    val actualObj = JSONObject().apply {
+                        put("role", "user")
+                        put("parts", JSONArray().put(JSONObject().put("text", mensajeUsuario)))
+                    }
+                    contentsArray.put(actualObj)
 
-                    val sysInstruction = JSONObject().put(
-                        "parts",
-                        JSONArray().put(JSONObject().put("text", promptSistema))
-                    )
-
-                    val bodyJson = JSONObject().apply {
-                        put("system_instruction", sysInstruction)
+                    val body = JSONObject().apply {
+                        put("systemInstruction", instruccionSistema)
                         put("contents", contentsArray)
                     }
 
                     OutputStreamWriter(conn.outputStream, "UTF-8").use { writer ->
-                        writer.write(bodyJson.toString())
+                        writer.write(body.toString())
                         writer.flush()
                     }
 
                     val code = conn.responseCode
                     if (code in 200..299) {
-                        val responseText = BufferedReader(InputStreamReader(conn.inputStream, "UTF-8")).use {
-                            it.readText()
-                        }
-                        val jsonResp = JSONObject(responseText)
+                        val respText = BufferedReader(InputStreamReader(conn.inputStream, "UTF-8")).use { it.readText() }
+                        val jsonResp = JSONObject(respText)
                         val candidates = jsonResp.optJSONArray("candidates")
                         if (candidates != null && candidates.length() > 0) {
                             val content = candidates.getJSONObject(0).optJSONObject("content")
                             val parts = content?.optJSONArray("parts")
-                            val textoBruto = parts?.optJSONObject(0)?.optString("text", "") ?: ""
-
-                            if (textoBruto.isNotEmpty()) {
-                                val (textoLimpio, spriteDetectado) = extraerSpriteYLimpiar(textoBruto)
-
-                                historialTurnos.add(Pair("user", mensajeUsuario))
-                                historialTurnos.add(Pair("model", textoLimpio))
-                                while (historialTurnos.size > 12) {
-                                    historialTurnos.removeAt(0)
+                            if (parts != null && parts.length() > 0) {
+                                val raw = parts.getJSONObject(0).optString("text", "").trim()
+                                if (raw.isNotEmpty()) {
+                                    respuestaFinal = raw.replace("*", "").replace("#", "").trim()
+                                    conn.disconnect()
+                                    break
                                 }
-
-                                mainHandler.post {
-                                    hablar(textoLimpio, spriteDetectado)
-                                }
-                                exito = true
-                                conn.disconnect()
-                                break
                             }
                         }
                     } else {
                         val errStream = conn.errorStream ?: conn.inputStream
-                        val errBody = if (errStream != null) {
-                            BufferedReader(InputStreamReader(errStream, "UTF-8")).use { it.readText() }
-                        } else ""
-                        ultimoError = "HTTP $code: ${errBody.take(120)}"
+                        val errTxt = BufferedReader(InputStreamReader(errStream, "UTF-8")).use { it.readText() }
+                        ultimoError = "HTTP $code: $errTxt"
                     }
                     conn.disconnect()
                 } catch (e: Exception) {
@@ -503,55 +484,47 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 }
             }
 
-            if (!exito) {
+            if (respuestaFinal != null) {
+                historialChat.add(Pair("user", mensajeUsuario))
+                historialChat.add(Pair("model", respuestaFinal!!))
+                while (historialChat.size > 12) {
+                    historialChat.removeAt(0)
+                }
+
+                val spriteElegido = elegirSpritePorContexto(respuestaFinal!!)
                 mainHandler.post {
-                    val aviso = if (ultimoError.contains("400") || ultimoError.contains("403") || ultimoError.contains("API_KEY")) {
-                        "Señor, Google rechazó la clave API de Gemini. Verifique que esté bien copiada."
-                    } else if (ultimoError.contains("429")) {
-                        "Se alcanzó el límite temporal de peticiones gratuitas en Gemini, señor. Intente en unos segundos."
-                    } else {
-                        "No logré conectar directamente con Gemini, señor. Revise su conexión a internet."
-                    }
+                    hablar(respuestaFinal!!, spriteElegido)
+                }
+            } else {
+                val aviso = when {
+                    ultimoError.contains("400") || ultimoError.contains("403") ->
+                        "La clave API de Gemini fue rechazada o no es válida, señor."
+                    ultimoError.contains("429") ->
+                        "Se alcanzó el límite temporal de consultas gratuitas en Gemini, señor."
+                    else ->
+                        "No pude conectar con los servidores de Google Gemini. Verifique su conexión a internet, señor."
+                }
+                mainHandler.post {
                     hablar(aviso, "alerta")
                 }
             }
         }
     }
 
-    private fun extraerSpriteYLimpiar(textoRaw: String): Pair<String, String> {
-        var sprite = ""
-        val regex = Regex("\[([a-z0-9_]+)\]")
-        val match = regex.find(textoRaw)
-        if (match != null) {
-            val candidato = match.groupValues[1]
-            if (obtenerBitmapSprite(candidato) != null) {
-                sprite = candidato
-            }
-        }
-        val limpio = textoRaw
-            .replace(regex, "")
-            .replace("*", "")
-            .replace("#", "")
-            .trim()
-
-        val spriteFinal = if (sprite.isNotEmpty()) sprite else elegirSpritePorContexto(limpio)
-        return Pair(limpio, spriteFinal)
-    }
-
     private fun elegirSpritePorContexto(respuesta: String): String {
         if (modoFormaManual) return spriteActualNombre
         val txt = respuesta.lowercase(Locale.getDefault())
         return when {
-            txt.contains("excelente") || txt.contains("logrado") || txt.contains("feliz") -> "saltando_azul"
+            txt.contains("excelente") || txt.contains("logrado") || txt.contains("feliz") || txt.contains("genial") -> "saltando_azul"
             txt.contains("rápido") || txt.contains("buscando") || txt.contains("ejecutando") -> "corriendo_rapido"
-            txt.contains("batería") || txt.contains("energía") -> "recargando_bateria"
+            txt.contains("batería") || txt.contains("energía") || txt.contains("cargando") -> "recargando_bateria"
             txt.contains("asco") || txt.contains("virus") || txt.contains("basura") -> "asco_verde"
             txt.contains("malicioso") || txt.contains("astuto") || txt.contains("secreto") -> "malicioso_cian"
             txt.contains("amor") || txt.contains("encanta") || txt.contains("corazón") -> "enamorado_corazones"
             txt.contains("error") || txt.contains("alerta") || txt.contains("peligro") -> "furia_roja"
             txt.contains("triste") || txt.contains("lamento") -> "triste_llorando"
             txt.contains("analizando") || txt.contains("pensando") || txt.contains("revisando") -> "pensando"
-            txt.contains("dormir") || txt.contains("reposo") -> "durmiendo_reposo"
+            txt.contains("dormir") || txt.contains("descansar") || txt.contains("reposo") -> "durmiendo_reposo"
             else -> "reposo_feliz"
         }
     }
