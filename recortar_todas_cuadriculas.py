@@ -16,7 +16,6 @@ if os.path.exists(CARPETA_ORIGEN):
             except Exception:
                 pass
 
-# Cada hoja tiene 4 filas x 2 columnas (8 avatares por hoja)
 HOJAS_MAPEO = {
     "hoja_1.jpg": [
         "reposo_feliz", "escuchando_mano_oido",
@@ -50,28 +49,53 @@ HOJAS_MAPEO = {
     ]
 }
 
+def encontrar_intervalos_activos(perfil_bool, min_tam=25):
+    intervalos = []
+    en_bloque = False
+    inicio = 0
+    for i, val in enumerate(perfil_bool):
+        if val and not en_bloque:
+            en_bloque = True
+            inicio = i
+        elif not val and en_bloque:
+            en_bloque = False
+            if i - inicio >= min_tam:
+                intervalos.append((inicio, i))
+    if en_bloque and len(perfil_bool) - inicio >= min_tam:
+        intervalos.append((inicio, len(perfil_bool)))
+    return intervalos
+
+def fusionar_intervalos_cercanos(intervalos, gap_max=14):
+    if not intervalos:
+        return []
+    fusionados = [intervalos[0]]
+    for ini, fin in intervalos[1:]:
+        prev_ini, prev_fin = fusionados[-1]
+        if ini - prev_fin <= gap_max:
+            fusionados[-1] = (prev_ini, fin)
+        else:
+            fusionados.append((ini, fin))
+    return fusionados
+
 def limpiar_fondo_con_proteccion_borde(img_rgba):
     arr = np.array(img_rgba, dtype=np.float32)
     h, w, _ = arr.shape
     r, g, b = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2]
 
-    # Detectar fondo blanco/gris muy claro de las esquinas de la celda
     esquinas = np.concatenate([
-        arr[0:6, 0:6, :3].reshape(-1, 3),
-        arr[0:6, w-6:w, :3].reshape(-1, 3),
-        arr[h-6:h, 0:6, :3].reshape(-1, 3),
-        arr[h-6:h, w-6:w, :3].reshape(-1, 3),
+        arr[0:5, 0:5, :3].reshape(-1, 3),
+        arr[0:5, w-5:w, :3].reshape(-1, 3),
+        arr[h-5:h, 0:5, :3].reshape(-1, 3),
+        arr[h-5:h, w-5:w, :3].reshape(-1, 3),
     ], axis=0)
     bg_color = np.median(esquinas, axis=0)
 
-    # Diferencia respecto al fondo puro + deteccion de contorno (gradiente) para frenar antes de entrar al cuerpo blanco del robot
     dist_bg = np.sqrt(
         (r - bg_color[0]) ** 2 +
         (g - bg_color[1]) ** 2 +
         (b - bg_color[2]) ** 2
     )
 
-    # Magnitud de gradiente (borde del personaje)
     lum = 0.299 * r + 0.587 * g + 0.114 * b
     gx = np.zeros_like(lum)
     gy = np.zeros_like(lum)
@@ -79,8 +103,7 @@ def limpiar_fondo_con_proteccion_borde(img_rgba):
     gy[1:-1, :] = np.abs(lum[2:, :] - lum[:-2, :]) * 0.5
     grad = np.sqrt(gx ** 2 + gy ** 2)
 
-    # Umbral estricto: solo elimina el fondo uniforme exterior (dist_bg < 22) y se detiene al tocar el contorno gris suave del robot
-    es_candidato_fondo = (dist_bg < 22.0) & (grad < 8.5)
+    es_candidato_fondo = (dist_bg < 24.0) & (grad < 8.5)
 
     visitado = np.zeros((h, w), dtype=bool)
     es_fondo = np.zeros((h, w), dtype=bool)
@@ -126,9 +149,60 @@ def mejorar_nitidez_y_escalar(img_rgba, tam_final=1024):
     lienzo.paste(img_rgba, ((lado - w) // 2, (lado - h) // 2))
 
     escalada = lienzo.resize((tam_final, tam_final), Image.Resampling.LANCZOS)
-    nitida = escalada.filter(ImageFilter.UnsharpMask(radius=1.5, percent=140, threshold=2))
-    nitida = ImageEnhance.Contrast(nitida).enhance(1.05)
+    nitida = escalada.filter(ImageFilter.UnsharpMask(radius=1.4, percent=135, threshold=2))
+    nitida = ImageEnhance.Contrast(nitida).enhance(1.04)
     return nitida
+
+def detectar_cajas_personajes(hoja_rgba, max_esperados=8):
+    arr = np.array(hoja_rgba, dtype=np.float32)
+    h, w, _ = arr.shape
+    r, g, b = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2]
+
+    # Muestrear fondo en bordes exteriores de la hoja
+    bordes = np.concatenate([
+        arr[0:8, :, :3].reshape(-1, 3),
+        arr[h-8:h, :, :3].reshape(-1, 3),
+        arr[:, 0:8, :3].reshape(-1, 3),
+        arr[:, w-8:w, :3].reshape(-1, 3),
+    ], axis=0)
+    bg = np.median(bordes, axis=0)
+
+    dist = np.sqrt((r - bg[0])**2 + (g - bg[1])**2 + (b - bg[2])**2)
+    # Un pixel pertenece a un personaje si difiere del fondo blanco/gris claro
+    no_fondo = dist > 16.0
+
+    # Detectar bandas horizontales (filas de personajes)
+    perfil_y = np.sum(no_fondo, axis=1) > (w * 0.035)
+    filas = fusionar_intervalos_cercanos(encontrar_intervalos_activos(perfil_y, min_tam=int(h * 0.07)), gap_max=int(h * 0.015))
+
+    cajas = []
+    pad = 10
+    for y1, y2 in filas:
+        sub_y1 = max(0, y1 - pad)
+        sub_y2 = min(h, y2 + pad)
+        franja = no_fondo[sub_y1:sub_y2, :]
+        perfil_x = np.sum(franja, axis=0) > ((sub_y2 - sub_y1) * 0.04)
+        cols = fusionar_intervalos_cercanos(encontrar_intervalos_activos(perfil_x, min_tam=int(w * 0.08)), gap_max=int(w * 0.015))
+
+        for x1, x2 in cols:
+            sub_x1 = max(0, x1 - pad)
+            sub_x2 = min(w, x2 + pad)
+            cajas.append((sub_x1, sub_y1, sub_x2, sub_y2))
+
+    # Respaldo inteligente si la deteccion automatica no encontro suficientes bloques
+    if len(cajas) < 4:
+        cajas = []
+        # Detectar automaticamente si la hoja es horizontal (4 cols x 2 filas) o vertical (2 cols x 4 filas)
+        if w > h * 1.15:
+            cols, filas_n = 4, 2
+        else:
+            cols, filas_n = 2, 4
+        cw, ch = w // cols, h // filas_n
+        for f in range(filas_n):
+            for c in range(cols):
+                cajas.append((c * cw, f * ch, (c + 1) * cw, (f + 1) * ch))
+
+    return cajas[:max_esperados]
 
 def procesar_todas():
     for nombre_hoja, nombres_sprites in HOJAS_MAPEO.items():
@@ -142,31 +216,16 @@ def procesar_todas():
             continue
 
         hoja = Image.open(ruta_encontrada).convert("RGBA")
-        ancho, alto = hoja.size
-        # Cuadricula real de 4 filas x 2 columnas
-        cols, filas = 2, 4
-        celda_w = ancho // cols
-        celda_h = alto // filas
+        cajas = detectar_cajas_personajes(hoja, max_esperados=len(nombres_sprites))
 
-        idx = 0
-        for f in range(filas):
-            for c in range(cols):
-                if idx >= len(nombres_sprites):
-                    break
-                margen_x = int(celda_w * 0.02)
-                margen_y = int(celda_h * 0.02)
-                caja = (
-                    c * celda_w + margen_x,
-                    f * celda_h + margen_y,
-                    (c + 1) * celda_w - margen_x,
-                    (f + 1) * celda_h - margen_y
-                )
-                recorte = hoja.crop(caja)
-                sin_fondo = limpiar_fondo_con_proteccion_borde(recorte)
-                final_hd = mejorar_nitidez_y_escalar(sin_fondo, 1024)
-                destino = os.path.join(CARPETA_SALIDA, f"{nombres_sprites[idx]}.png")
-                final_hd.save(destino, "PNG", optimize=True)
-                idx += 1
+        for idx, caja in enumerate(cajas):
+            if idx >= len(nombres_sprites):
+                break
+            recorte = hoja.crop(caja)
+            sin_fondo = limpiar_fondo_con_proteccion_borde(recorte)
+            final_hd = mejorar_nitidez_y_escalar(sin_fondo, 1024)
+            destino = os.path.join(CARPETA_SALIDA, f"{nombres_sprites[idx]}.png")
+            final_hd.save(destino, "PNG", optimize=True)
 
 if __name__ == "__main__":
     procesar_todas()
