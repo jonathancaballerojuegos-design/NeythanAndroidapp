@@ -1,122 +1,154 @@
 import os
-from collections import deque
+from PIL import Image, ImageFilter, ImageEnhance
 import numpy as np
-from PIL import Image, ImageFilter
 
-CARPETA_DRAWABLE = "app/src/main/res/drawable"
-os.makedirs(CARPETA_DRAWABLE, exist_ok=True)
+CARPETA_SALIDA = "app/src/main/res/drawable-nodpi"
+os.makedirs(CARPETA_SALIDA, exist_ok=True)
 
-HOJAS = [
-    ("hoja_1.jpg", 2, 4, [
-        "angulo_frente_1", "angulo_perfil_1", "angulo_tres_cuartos_1", "angulo_espalda_1",
-        "angulo_frente_2", "angulo_perfil_2", "angulo_tres_cuartos_2", "angulo_espalda_2"
-    ]),
-    ("hoja_2.jpg", 4, 4, [
-        "saltando_estrellas", "corriendo", "recargando_bateria_rosa", "vibrando_feliz",
-        "llorando", "sorprendido", "enojado_vapor", "pensando",
-        "guino_paz", "celebracion_arcoiris", "asustado", "gafas_cool",
-        "mareado", "reposo_feliz", "saludo_firme", "durmiendo_brazos_arriba"
-    ]),
-    ("hoja_3.jpg", 3, 3, [
-        "estrellas_cian", "hablando_boca_abierta", "dudoso_ambar",
-        "asombro_amarillo", "molesto_rojo", "escuchando_mano_oido",
-        "enamorado_manos_pecho", "escaneando_holograma", "durmiendo_reposo"
-    ]),
-    ("hoja_4.jpg", 2, 3, [
-        "hablando_boca_cerrada", "alegre_saludando", "procesando_guino",
-        "alerta", "curioso_purpura", "reposo_saludando"
-    ]),
-    ("hoja_5.jpg", 4, 4, [
-        "saltando_azul", "corriendo_rapido", "recargando_bateria", "energia_verde",
-        "triste_llorando", "sorpresa_amarilla", "furia_roja", "analizando",
-        "guino_victoria", "celebrando_confeti", "miedo_purpura", "gafas_oscuras",
-        "confusion_espiral", "asco_verde", "enamorado_corazones", "malicioso_cian"
-    ])
-]
+# Limpiar recortes viejos en drawable normal para que Android no use versiones reescaladas borrosas
+CARPETA_DRAWABLE_VIEJA = "app/src/main/res/drawable"
+if os.path.exists(CARPETA_DRAWABLE_VIEJA):
+    for archivo in os.listdir(CARPETA_DRAWABLE_VIEJA):
+        if archivo.endswith(".png") and not archivo.startswith("ic_"):
+            try:
+                os.remove(os.path.join(CARPETA_DRAWABLE_VIEJA, archivo))
+            except Exception:
+                pass
 
-def eliminar_fondo_sin_halo(img_pil, tolerancia=58, erosion_px=2):
-    img = img_pil.convert("RGBA")
-    arr = np.array(img, dtype=np.int16)
+HOJAS_MAPEO = {
+    "hoja_1.jpg": [
+        "reposo_feliz", "escuchando_mano_oido", "hablando_boca_abierta",
+        "hablando_boca_cerrada", "pensando", "alerta"
+    ],
+    "hoja_2.jpg": [
+        "saltando_azul", "corriendo_rapido", "recargando_bateria",
+        "celebrando_confeti", "enamorado_corazones", "malicioso_cian"
+    ],
+    "hoja_3.jpg": [
+        "asco_verde", "gafas_oscuras", "analizando",
+        "furia_roja", "durmiendo_reposo", "triste_llorando"
+    ],
+    "hoja_4.jpg": [
+        "angulo_perfil_1", "angulo_espalda_1", "curioso_purpura",
+        "saltando_estrellas", "corriendo", "saludo_formal"
+    ],
+    "hoja_5.jpg": [
+        "modo_escudo", "modo_combate", "modo_sigilo",
+        "modo_diagnostico", "modo_energia", "modo_reposo_profundo"
+    ]
+}
+
+def limpiar_fondo_inteligente(img_rgba):
+    arr = np.array(img_rgba, dtype=np.int32)
     h, w, _ = arr.shape
+    r, g, b = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2]
+
+    # Detectar color dominante del fondo en las 4 esquinas
+    esquinas = np.concatenate([
+        arr[0:10, 0:10, :3].reshape(-1, 3),
+        arr[0:10, w-10:w, :3].reshape(-1, 3),
+        arr[h-10:h, 0:10, :3].reshape(-1, 3),
+        arr[h-10:h, w-10:w, :3].reshape(-1, 3),
+    ], axis=0)
+    bg_color = np.median(esquinas, axis=0)
+
+    dist = np.sqrt(
+        (r - bg_color[0]) ** 2 +
+        (g - bg_color[1]) ** 2 +
+        (b - bg_color[2]) ** 2
+    )
+
+    # Solo hacer transparente los pixeles conectados a los bordes (Flood Fill / BFS)
+    # Esto protege el interior blanco del cuerpo y cabeza del robot
     visitado = np.zeros((h, w), dtype=bool)
+    es_fondo = np.zeros((h, w), dtype=bool)
+    umbral = 42.0
+
+    from collections import deque
     cola = deque()
 
-    def es_fondo(y, x):
-        r, g, b, _ = arr[y, x]
-        brillo = (int(r) + int(g) + int(b)) // 3
-        saturacion = max(r, g, b) - min(r, g, b)
-        return brillo >= 255 - tolerancia and saturacion <= 38
-
     for x in range(w):
-        for y in (0, 1, h - 2, h - 1):
-            if 0 <= y < h and not visitado[y, x] and es_fondo(y, x):
-                visitado[y, x] = True
-                cola.append((y, x))
+        if dist[0, x] < umbral:
+            cola.append((0, x))
+            visitado[0, x] = True
+        if dist[h - 1, x] < umbral:
+            cola.append((h - 1, x))
+            visitado[h - 1, x] = True
     for y in range(h):
-        for x in (0, 1, w - 2, w - 1):
-            if 0 <= x < w and not visitado[y, x] and es_fondo(y, x):
-                visitado[y, x] = True
-                cola.append((y, x))
+        if dist[y, 0] < umbral:
+            cola.append((y, 0))
+            visitado[y, 0] = True
+        if dist[y, w - 1] < umbral:
+            cola.append((y, w - 1))
+            visitado[y, w - 1] = True
 
     while cola:
         cy, cx = cola.popleft()
-        for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)):
+        es_fondo[cy, cx] = True
+        for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
             ny, nx = cy + dy, cx + dx
             if 0 <= ny < h and 0 <= nx < w and not visitado[ny, nx]:
-                if es_fondo(ny, nx):
+                if dist[ny, nx] < umbral:
                     visitado[ny, nx] = True
                     cola.append((ny, nx))
 
-    alpha = np.where(visitado, 0, 255).astype(np.uint8)
-    alpha_img = Image.fromarray(alpha, mode="L")
-    for _ in range(erosion_px):
-        alpha_img = alpha_img.filter(ImageFilter.MinFilter(3))
-    alpha_img = alpha_img.filter(ImageFilter.GaussianBlur(radius=0.8))
-
     salida = arr.astype(np.uint8)
-    salida[:, :, 3] = np.array(alpha_img, dtype=np.uint8)
-    return Image.fromarray(salida)
+    salida[es_fondo, 3] = 0
+    return Image.fromarray(salida, "RGBA")
 
-def centrar_nitido(img_rgba, tamano=768, margen=20):
+def mejorar_nitidez_y_escalar(img_rgba, tam_final=1024):
     bbox = img_rgba.getbbox()
-    if not bbox:
-        return img_rgba.resize((tamano, tamano), Image.Resampling.LANCZOS)
-    recorte = img_rgba.crop(bbox)
-    max_lado = tamano - (margen * 2)
-    ratio = min(max_lado / recorte.width, max_lado / recorte.height)
-    nuevo_w = max(1, int(recorte.width * ratio))
-    nuevo_h = max(1, int(recorte.height * ratio))
-    recorte = recorte.resize((nuevo_w, nuevo_h), Image.Resampling.LANCZOS)
-    recorte = recorte.filter(ImageFilter.UnsharpMask(radius=1.2, percent=135, threshold=2))
+    if bbox:
+        img_rgba = img_rgba.crop(bbox)
 
-    lienzo = Image.new("RGBA", (tamano, tamano), (0, 0, 0, 0))
-    pos_x = (tamano - nuevo_w) // 2
-    pos_y = (tamano - nuevo_h) // 2
-    lienzo.paste(recorte, (pos_x, pos_y), recorte)
-    return lienzo
+    w, h = img_rgba.size
+    lado = max(w, h)
+    lienzo = Image.new("RGBA", (lado, lado), (0, 0, 0, 0))
+    lienzo.paste(img_rgba, ((lado - w) // 2, (lado - h) // 2))
 
-total = 0
-for archivo, filas, cols, nombres in HOJAS:
-    ruta_origen = os.path.join(CARPETA_DRAWABLE, archivo)
-    if not os.path.exists(ruta_origen):
-        continue
-    img = Image.open(ruta_origen)
-    ancho_celda = img.width // cols
-    alto_celda = img.height // filas
-    idx = 0
-    for f in range(filas):
-        for c in range(cols):
-            if idx >= len(nombres):
-                break
-            caja = (c * ancho_celda, f * alto_celda, (c + 1) * ancho_celda, (f + 1) * alto_celda)
-            celda = img.crop(caja)
-            limpia = eliminar_fondo_sin_halo(celda)
-            final = centrar_nitido(limpia)
-            ruta_guardado = os.path.join(CARPETA_DRAWABLE, f"{nombres[idx]}.png")
-            final.save(ruta_guardado, "PNG", optimize=True)
-            total += 1
-            idx += 1
-    os.remove(ruta_origen)
-    print(f"[OK] {archivo} recortada sin halo blanco y eliminada.")
+    # Reescalado de maxima calidad LANCZOS y enfoque fino (UnsharpMask) para evitar borrosidad
+    escalada = lienzo.resize((tam_final, tam_final), Image.Resampling.LANCZOS)
+    nitida = escalada.filter(ImageFilter.UnsharpMask(radius=1.6, percent=145, threshold=2))
+    nitida = ImageEnhance.Contrast(nitida).enhance(1.06)
+    return nitida
 
-print(f"Total sprites HD generados: {total}")
+def procesar_todas():
+    for nombre_hoja, nombres_sprites in HOJAS_MAPEO.items():
+        rutas_posibles = [
+            nombre_hoja,
+            os.path.join("sprites_originales", nombre_hoja),
+            os.path.join("app/src/main/res/drawable", nombre_hoja),
+            os.path.join("app/src/main/res/drawable-nodpi", nombre_hoja),
+        ]
+        ruta_encontrada = next((p for p in rutas_posibles if os.path.exists(p)), None)
+        if not ruta_encontrada:
+            continue
+
+        hoja = Image.open(ruta_encontrada).convert("RGBA")
+        ancho, alto = hoja.size
+        cols, filas = 3, 2
+        celda_w = ancho // cols
+        celda_h = alto // filas
+
+        idx = 0
+        for f in range(filas):
+            for c in range(cols):
+                if idx >= len(nombres_sprites):
+                    break
+                margen_x = int(celda_w * 0.03)
+                margen_y = int(celda_h * 0.03)
+                caja = (
+                    c * celda_w + margen_x,
+                    f * celda_h + margen_y,
+                    (c + 1) * celda_w - margen_x,
+                    (f + 1) * celda_h - margen_y
+                )
+                recorte = hoja.crop(caja)
+                sin_fondo = limpiar_fondo_inteligente(recorte)
+                final_hd = mejorar_nitidez_y_escalar(sin_fondo, 1024)
+                destino = os.path.join(CARPETA_SALIDA, f"{nombres_sprites[idx]}.png")
+                final_hd.save(destino, "PNG", optimize=True)
+                idx += 1
+
+if __name__ == "__main__":
+    procesar_todas()
