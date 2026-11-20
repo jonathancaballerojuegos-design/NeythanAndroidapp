@@ -46,7 +46,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         // COLOCA AQUI TU CLAVE REAL DE GOOGLE AI STUDIO (GEMINI_API_KEY)
         // Ejemplo: "AIzaSyD..."
         // =========================================================================
-        const val GEMINI_API_KEY = "PON_AQUI_TU_GEMINI_API_KEY"
+        const val GEMINI_API_KEY = "AQ.Ab8RN6IqY4eVm7Jl_Jx4wWCFsym_4rYYOqoyw0eClbe7RdctMw"
         const val SERVER_URL = ""
         private const val REQ_PERMISOS = 1001
     }
