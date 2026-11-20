@@ -43,7 +43,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     companion object {
         const val SERVER_URL = ""
-        const val GEMINI_API_KEY = "PON_AQUI_TU_GEMINI_API_KEY"
+        const val GEMINI_API_KEY = "AQ.Ab8RN6JZHv7gvp16sxdWvv1XmaytQOSPJynpQq8bjYatpedeaQ"
         private const val REQ_PERMISOS = 1001
     }
 
