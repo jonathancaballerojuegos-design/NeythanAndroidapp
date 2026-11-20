@@ -42,6 +42,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     companion object {
         const val SERVER_URL = "https://neythanproyect-cloud.onrender.com"
+        const val NEYTHAN_SECRET_TOKEN = "PON_AQUI_TU_TOKEN_DE_RENDER"
         private const val REQ_PERMISOS = 1001
     }
 
@@ -53,30 +54,19 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     private var estadoActual = "REPOSO"
     private var spriteActualNombre = "reposo_feliz"
-    private var subtituloPantalla = "Iniciando sistemas, señor..."
+    private var subtituloPantalla = "Iniciando sistemas proactivos, señor..."
     private var nivelVozUsuario = 0f
     private var estaHablando = false
     private var bocaAbiertaFrame = false
     private var conversacionActivaHasta = 0L
-    private var modoFormaFija = false
-    private var indiceFormaActual = 0
-    private var sonidoSistemaSilenciado = false
+    private var modoFormaManual = false
+    private var indiceForma = 0
 
     private val formasDisponibles = listOf(
-        "reposo_feliz",
-        "saltando_azul",
-        "corriendo_rapido",
-        "recargando_bateria",
-        "celebrando_confeti",
-        "enamorado_corazones",
-        "malicioso_cian",
-        "asco_verde",
-        "gafas_cool",
-        "analizando",
-        "furia_roja",
-        "durmiendo_reposo",
-        "angulo_perfil_1",
-        "angulo_espalda_1"
+        "reposo_feliz", "saltando_azul", "corriendo_rapido", "recargando_bateria",
+        "celebrando_confeti", "enamorado_corazones", "malicioso_cian", "asco_verde",
+        "gafas_oscuras", "analizando", "furia_roja", "durmiendo_reposo",
+        "angulo_perfil_1", "angulo_espalda_1"
     )
 
     private val cacheSprites = HashMap<String, Bitmap?>()
@@ -93,12 +83,13 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         iniciarMotorVoz()
         verificarPermisosYArrancar()
         iniciarBucleAnimacion()
+        iniciarVigilanciaProactiva()
     }
 
     private fun iniciarMotorVoz() {
         try {
             tts = TextToSpeech(this, this, "com.google.android.tts")
-        } catch (_: Exception) {
+        } catch (e: Exception) {
             tts = TextToSpeech(this, this)
         }
     }
@@ -114,7 +105,6 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                 override fun onStart(utteranceId: String?) {
                     mainHandler.post {
-                        restaurarAudioSistema()
                         estaHablando = true
                         estadoActual = "HABLANDO"
                     }
@@ -125,11 +115,11 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                         estaHablando = false
                         bocaAbiertaFrame = false
                         estadoActual = "ESCUCHANDO"
-                        if (!modoFormaFija) {
+                        if (!modoFormaManual) {
                             spriteActualNombre = "escuchando_mano_oido"
                         }
                         conversacionActivaHasta = System.currentTimeMillis() + 18000L
-                        reanudarEscucha(600L)
+                        reanudarEscucha(1400L)
                     }
                 }
 
@@ -139,37 +129,15 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                         estaHablando = false
                         bocaAbiertaFrame = false
                         estadoActual = "ESCUCHANDO"
-                        reanudarEscucha(800L)
+                        reanudarEscucha(1500L)
                     }
                 }
             })
             ttsListo = true
-            hablar("Sistemas nativos en línea, señor. A sus órdenes.", "reposo_feliz")
+            hablar("Sistemas nativos y vigilancia proactiva en línea, señor.", "reposo_feliz")
         } else {
             subtituloPantalla = "Motor de voz no disponible, modo visual activo."
-            reanudarEscucha(800L)
-        }
-    }
-
-    private fun silenciarPitidoReconocimiento() {
-        if (sonidoSistemaSilenciado) return
-        try {
-            val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            am.adjustStreamVolume(AudioManager.STREAM_NOTIFICATION, AudioManager.ADJUST_MUTE, 0)
-            am.adjustStreamVolume(AudioManager.STREAM_SYSTEM, AudioManager.ADJUST_MUTE, 0)
-            sonidoSistemaSilenciado = true
-        } catch (_: Exception) {
-        }
-    }
-
-    private fun restaurarAudioSistema() {
-        if (!sonidoSistemaSilenciado) return
-        try {
-            val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            am.adjustStreamVolume(AudioManager.STREAM_NOTIFICATION, AudioManager.ADJUST_UNMUTE, 0)
-            am.adjustStreamVolume(AudioManager.STREAM_SYSTEM, AudioManager.ADJUST_UNMUTE, 0)
-            sonidoSistemaSilenciado = false
-        } catch (_: Exception) {
+            reanudarEscucha(1500L)
         }
     }
 
@@ -181,7 +149,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             }
         }
         iniciarServiciosNativos()
-        reanudarEscucha(1000L)
+        reanudarEscucha(1500L)
     }
 
     override fun onRequestPermissionsResult(
@@ -192,7 +160,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == REQ_PERMISOS && grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
             iniciarServiciosNativos()
-            reanudarEscucha(600L)
+            reanudarEscucha(1000L)
         } else {
             subtituloPantalla = "Permiso de micrófono requerido para escucharle, señor."
             estadoActual = "ALERTA"
@@ -210,13 +178,30 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             }
         } catch (_: Exception) {
         }
+
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && Settings.canDrawOverlays(this)) {
+                startService(Intent(this, FloatingService::class.java))
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun silenciarTonosSistema(silenciar: Boolean) {
+        try {
+            val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            val flag = if (silenciar) AudioManager.ADJUST_MUTE else AudioManager.ADJUST_UNMUTE
+            am.adjustStreamVolume(AudioManager.STREAM_NOTIFICATION, flag, 0)
+            am.adjustStreamVolume(AudioManager.STREAM_SYSTEM, flag, 0)
+        } catch (_: Exception) {
+        }
     }
 
     private fun configurarReconocedor() {
         try {
             speechRecognizer?.destroy()
             if (!SpeechRecognizer.isRecognitionAvailable(this)) {
-                subtituloPantalla = "Reconocimiento de voz no disponible en este dispositivo."
+                subtituloPantalla = "Reconocimiento de voz no disponible."
                 return
             }
             speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)
@@ -224,7 +209,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 override fun onReadyForSpeech(params: Bundle?) {
                     if (!estaHablando) {
                         estadoActual = "ESCUCHANDO"
-                        if (!modoFormaFija && spriteActualNombre == "reposo_feliz") {
+                        if (!modoFormaManual && spriteActualNombre == "reposo_feliz") {
                             spriteActualNombre = "escuchando_mano_oido"
                         }
                     }
@@ -245,13 +230,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 override fun onError(error: Int) {
                     nivelVozUsuario = 0f
                     if (!estaHablando) {
-                        val espera = when (error) {
-                            SpeechRecognizer.ERROR_NO_MATCH,
-                            SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> 1400L
-                            SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> 2200L
-                            else -> 1800L
-                        }
-                        reanudarEscucha(espera)
+                        reanudarEscucha(1800L)
                     }
                 }
 
@@ -261,7 +240,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                     if (!matches.isNullOrEmpty()) {
                         procesarTextoCapturado(matches[0])
                     } else {
-                        reanudarEscucha(1200L)
+                        reanudarEscucha(1400L)
                     }
                 }
 
@@ -281,7 +260,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private val tareaEscucha = Runnable {
         if (estaHablando) return@Runnable
         try {
-            silenciarPitidoReconocimiento()
+            silenciarTonosSistema(true)
             if (speechRecognizer == null) {
                 configurarReconocedor()
             }
@@ -293,7 +272,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             speechRecognizer?.startListening(intent)
         } catch (_: Exception) {
             configurarReconocedor()
-            reanudarEscucha(1800L)
+            reanudarEscucha(2000L)
         }
     }
 
@@ -304,15 +283,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             speechRecognizer?.cancel()
         } catch (_: Exception) {
         }
-    }
-
-    private fun cambiarSiguienteForma() {
-        indiceFormaActual = (indiceFormaActual + 1) % formasDisponibles.size
-        val nuevaForma = formasDisponibles[indiceFormaActual]
-        modoFormaFija = (indiceFormaActual != 0)
-        spriteActualNombre = nuevaForma
-        val nombreLegible = nuevaForma.replace("_", " ")
-        subtituloPantalla = "Forma activa: $nombreLegible"
+        silenciarTonosSistema(false)
     }
 
     private fun procesarTextoCapturado(textoRaw: String) {
@@ -324,10 +295,10 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
         if (!contieneWakeWord && !enVentanaActiva) {
             estadoActual = "REPOSO"
-            if (!modoFormaFija) {
+            if (!modoFormaManual) {
                 spriteActualNombre = "reposo_feliz"
             }
-            reanudarEscucha(1000L)
+            reanudarEscucha(1400L)
             return
         }
 
@@ -343,7 +314,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
         subtituloPantalla = "Usted: $orden"
         estadoActual = "PROCESANDO"
-        if (!modoFormaFija) {
+        if (!modoFormaManual) {
             spriteActualNombre = "pensando"
         }
 
@@ -357,16 +328,18 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private fun ejecutarComandoLocalSiAplica(orden: String): Boolean {
         val lower = orden.lowercase(Locale.getDefault())
 
-        if (lower.contains("cambia de forma") || lower.contains("siguiente forma") || lower.contains("otra forma")) {
-            cambiarSiguienteForma()
-            hablar("Forma actualizada, señor.", spriteActualNombre)
+        if (lower.contains("cambia de forma") || lower.contains("otra forma")) {
+            modoFormaManual = true
+            indiceForma = (indiceForma + 1) % formasDisponibles.size
+            spriteActualNombre = formasDisponibles[indiceForma]
+            hablar("Adoptando nueva forma visual, señor.", spriteActualNombre)
             return true
         }
 
-        if (lower.contains("forma original") || lower.contains("modo automático") || lower.contains("regresa a tu forma")) {
-            indiceFormaActual = 0
-            modoFormaFija = false
-            hablar("Regresando a mi forma original, señor.", "reposo_feliz")
+        if (lower.contains("forma original") || lower.contains("modo automático")) {
+            modoFormaManual = false
+            spriteActualNombre = "reposo_feliz"
+            hablar("Regresando a mi forma base original, señor.", spriteActualNombre)
             return true
         }
 
@@ -375,6 +348,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 .replace("en spotify", "")
                 .replace("spotify", "")
                 .replace("reproduce", "")
+                .replace("reproducice", "")
                 .replace("pon música", "")
                 .replace("pon", "")
                 .replace("abre", "")
@@ -412,6 +386,48 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         return false
     }
 
+    private fun iniciarVigilanciaProactiva() {
+        mainHandler.postDelayed(object : Runnable {
+            override fun run() {
+                if (!estaHablando && estadoActual != "PROCESANDO") {
+                    consultarAvisosProactivos()
+                }
+                mainHandler.postDelayed(this, 25000L)
+            }
+        }, 25000L)
+    }
+
+    private fun consultarAvisosProactivos() {
+        thread {
+            try {
+                val url = URL("$SERVER_URL/proactivo")
+                val conn = (url.openConnection() as HttpURLConnection).apply {
+                    requestMethod = "GET"
+                    if (NEYTHAN_SECRET_TOKEN.isNotEmpty()) {
+                        setRequestProperty("x-token", NEYTHAN_SECRET_TOKEN)
+                    }
+                    connectTimeout = 6000
+                    readTimeout = 8000
+                }
+                if (conn.responseCode in 200..299) {
+                    val txt = BufferedReader(InputStreamReader(conn.inputStream, "UTF-8")).use { it.readText() }
+                    val json = JSONObject(txt)
+                    if (json.optBoolean("hay_aviso", false)) {
+                        val mensaje = json.optString("mensaje", "")
+                        val sprite = json.optString("sprite", "curioso_purpura")
+                        if (mensaje.isNotEmpty()) {
+                            mainHandler.post {
+                                hablar(mensaje, sprite)
+                            }
+                        }
+                    }
+                }
+                conn.disconnect()
+            } catch (_: Exception) {
+            }
+        }
+    }
+
     private fun enviarAlServidorNube(mensajeUsuario: String) {
         thread {
             try {
@@ -419,8 +435,11 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 val conn = (url.openConnection() as HttpURLConnection).apply {
                     requestMethod = "POST"
                     setRequestProperty("Content-Type", "application/json; charset=UTF-8")
-                    connectTimeout = 9000
-                    readTimeout = 14000
+                    if (NEYTHAN_SECRET_TOKEN.isNotEmpty()) {
+                        setRequestProperty("x-token", NEYTHAN_SECRET_TOKEN)
+                    }
+                    connectTimeout = 10000
+                    readTimeout = 15000
                     doOutput = true
                 }
 
@@ -444,53 +463,49 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                     val emocion = jsonResp.optString("emocion", "REPOSO")
                     val spriteSugerido = jsonResp.optString("sprite", "")
 
-                    val spriteElegido = if (modoFormaFija) {
-                        spriteActualNombre
-                    } else {
-                        elegirSpritePorContexto(respuesta, emocion, spriteSugerido)
-                    }
+                    val spriteElegido = elegirSpritePorContexto(respuesta, emocion, spriteSugerido)
                     mainHandler.post {
                         hablar(respuesta, spriteElegido)
                     }
                 } else {
                     mainHandler.post {
-                        hablar("El servidor en la nube respondió con código $code, señor.", "alerta")
+                        hablar("El servidor respondió con código $code, señor.", "alerta")
                     }
                 }
                 conn.disconnect()
             } catch (_: Exception) {
                 mainHandler.post {
-                    hablar("El servidor gratuito de Render está despertando. Intente nuevamente en unos segundos, señor.", "recargando_bateria")
+                    hablar("El servidor en Render está despertando. Intente de nuevo en unos segundos, señor.", "recargando_bateria")
                 }
             }
         }
     }
 
     private fun elegirSpritePorContexto(respuesta: String, emocion: String, spriteApi: String): String {
+        if (modoFormaManual) return spriteActualNombre
         if (spriteApi.isNotEmpty() && obtenerBitmapSprite(spriteApi) != null) {
             return spriteApi
         }
         val txt = (respuesta + " " + emocion).lowercase(Locale.getDefault())
         return when {
-            txt.contains("excelente") || txt.contains("logrado") || txt.contains("feliz") || txt.contains("genial") -> "saltando_azul"
-            txt.contains("rápido") || txt.contains("buscando") || txt.contains("ejecutando") || txt.contains("corriendo") -> "corriendo_rapido"
-            txt.contains("batería") || txt.contains("energía") || txt.contains("cargando") || txt.contains("despertando") -> "recargando_bateria"
-            txt.contains("asco") || txt.contains("desagradable") || txt.contains("virus") || txt.contains("basura") -> "asco_verde"
-            txt.contains("malicioso") || txt.contains("truco") || txt.contains("astuto") || txt.contains("secreto") -> "malicioso_cian"
-            txt.contains("amor") || txt.contains("encanta") || txt.contains("corazón") || txt.contains("enamorado") -> "enamorado_corazones"
-            txt.contains("error") || txt.contains("alerta") || txt.contains("peligro") || txt.contains("fallo") -> "furia_roja"
+            txt.contains("excelente") || txt.contains("logrado") || txt.contains("feliz") -> "saltando_azul"
+            txt.contains("rápido") || txt.contains("buscando") || txt.contains("ejecutando") -> "corriendo_rapido"
+            txt.contains("batería") || txt.contains("energía") || txt.contains("despertando") -> "recargando_bateria"
+            txt.contains("asco") || txt.contains("virus") || txt.contains("basura") -> "asco_verde"
+            txt.contains("malicioso") || txt.contains("astuto") || txt.contains("secreto") -> "malicioso_cian"
+            txt.contains("amor") || txt.contains("encanta") || txt.contains("corazón") -> "enamorado_corazones"
+            txt.contains("error") || txt.contains("alerta") || txt.contains("peligro") -> "furia_roja"
             txt.contains("triste") || txt.contains("lamento") -> "triste_llorando"
             txt.contains("analizando") || txt.contains("pensando") || txt.contains("revisando") -> "pensando"
-            txt.contains("dormir") || txt.contains("descansar") || txt.contains("reposo") -> "durmiendo_reposo"
+            txt.contains("dormir") || txt.contains("reposo") -> "durmiendo_reposo"
             else -> "reposo_feliz"
         }
     }
 
     private fun hablar(texto: String, spritePrevio: String) {
         detenerEscuchaTemporal()
-        restaurarAudioSistema()
         subtituloPantalla = texto
-        if (!modoFormaFija) {
+        if (!modoFormaManual) {
             spriteActualNombre = spritePrevio
         }
         estadoActual = "HABLANDO"
@@ -554,11 +569,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private fun iniciarBucleAnimacion() {
         mainHandler.post(object : Runnable {
             override fun run() {
-                if (estaHablando) {
-                    bocaAbiertaFrame = !bocaAbiertaFrame
-                } else {
-                    bocaAbiertaFrame = false
-                }
+                bocaAbiertaFrame = if (estaHablando) !bocaAbiertaFrame else false
                 hudView.invalidate()
                 mainHandler.postDelayed(this, 140L)
             }
@@ -567,7 +578,6 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     override fun onDestroy() {
         detenerEscuchaTemporal()
-        restaurarAudioSistema()
         try {
             speechRecognizer?.destroy()
             tts?.stop()
@@ -597,9 +607,12 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         }
         private val paintBitmap = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
 
-        override fun onTouchEvent(event: MotionEvent): Boolean {
-            if (event.action == MotionEvent.ACTION_DOWN) {
-                cambiarSiguienteForma()
+        override fun onTouchEvent(event: MotionEvent?): Boolean {
+            if (event?.action == MotionEvent.ACTION_DOWN) {
+                modoFormaManual = true
+                indiceForma = (indiceForma + 1) % formasDisponibles.size
+                spriteActualNombre = formasDisponibles[indiceForma]
+                subtituloPantalla = "Forma: $spriteActualNombre"
                 invalidate()
                 return true
             }
@@ -632,14 +645,12 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             paintAro.alpha = 140
             canvas.drawCircle(cx, cy, radioBase, paintAro)
 
-            val esFormaBase = spriteActualNombre == "reposo_feliz" ||
-                    spriteActualNombre == "escuchando_mano_oido" ||
-                    spriteActualNombre == "hablando_boca_abierta" ||
-                    spriteActualNombre == "hablando_boca_cerrada"
+            val usarRetratoLabial = !modoFormaManual &&
+                (spriteActualNombre == "reposo_feliz" || spriteActualNombre == "escuchando_mano_oido")
 
             val nombreDibujar = when {
-                estaHablando && esFormaBase && bocaAbiertaFrame -> "hablando_boca_abierta"
-                estaHablando && esFormaBase && !bocaAbiertaFrame -> "hablando_boca_cerrada"
+                estaHablando && usarRetratoLabial && bocaAbiertaFrame -> "hablando_boca_abierta"
+                estaHablando && usarRetratoLabial && !bocaAbiertaFrame -> "hablando_boca_cerrada"
                 else -> spriteActualNombre
             }
 
