@@ -35,7 +35,10 @@ import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
+import java.util.TimeZone
 import kotlin.concurrent.thread
 import kotlin.math.sin
 
@@ -43,6 +46,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     companion object {
         const val SERVER_URL = ""
+        val GEMINI_API_KEY: String = BuildConfig.GEMINI_API_KEY
         private const val REQ_PERMISOS = 1001
     }
 
@@ -54,17 +58,17 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     private var estadoActual = "REPOSO"
     private var spriteActualNombre = "reposo_feliz"
-    private var subtituloPantalla = "Iniciando sistemas directos con Gemini, señor..."
+    private var subtituloPantalla = "Núcleo directo de Gemini en línea, señor."
     private var nivelVozUsuario = 0f
     private var estaHablando = false
     private var bocaAbiertaFrame = false
     private var conversacionActivaHasta = 0L
     private var modoFormaManual = false
     private var indiceForma = 0
-    private var enPrimerPlano = true
+    private var appEnPrimerPlano = false
+    private var modeloGeminiDetectado: String? = null
 
-    private val historialTurnos = ArrayList<Pair<String, String>>()
-    private var modeloActivoCache: String? = null
+    private val historialConversacion = ArrayList<Pair<String, String>>()
 
     private val formasDisponibles = listOf(
         "reposo_feliz", "saltando_azul", "corriendo_rapido", "recargando_bateria",
@@ -91,14 +95,14 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     override fun onResume() {
         super.onResume()
-        enPrimerPlano = true
-        if (!estaHablando && estadoActual != "PROCESANDO") {
+        appEnPrimerPlano = true
+        if (!estaHablando) {
             reanudarEscucha(800L)
         }
     }
 
     override fun onPause() {
-        enPrimerPlano = false
+        appEnPrimerPlano = false
         detenerEscuchaTemporal()
         super.onPause()
     }
@@ -136,7 +140,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                             spriteActualNombre = "escuchando_mano_oido"
                         }
                         conversacionActivaHasta = System.currentTimeMillis() + 20000L
-                        if (enPrimerPlano) {
+                        if (appEnPrimerPlano) {
                             reanudarEscucha(1000L)
                         }
                     }
@@ -148,14 +152,14 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                         estaHablando = false
                         bocaAbiertaFrame = false
                         estadoActual = "ESCUCHANDO"
-                        if (enPrimerPlano) {
+                        if (appEnPrimerPlano) {
                             reanudarEscucha(1200L)
                         }
                     }
                 }
             })
             ttsListo = true
-            hablar("Enlace directo con Google Gemini activo, señor.", "reposo_feliz")
+            hablar("Conexión directa con Gemini establecida, señor.", "reposo_feliz")
         } else {
             subtituloPantalla = "Motor de voz no disponible, modo visual activo."
             reanudarEscucha(1200L)
@@ -181,7 +185,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == REQ_PERMISOS && grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
             iniciarServiciosNativos()
-            reanudarEscucha(900L)
+            reanudarEscucha(800L)
         } else {
             subtituloPantalla = "Permiso de micrófono requerido para escucharle, señor."
             estadoActual = "ALERTA"
@@ -250,8 +254,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
                 override fun onError(error: Int) {
                     nivelVozUsuario = 0f
-                    if (!estaHablando && enPrimerPlano) {
-                        reanudarEscucha(1200L)
+                    if (!estaHablando && appEnPrimerPlano) {
+                        reanudarEscucha(1400L)
                     }
                 }
 
@@ -260,7 +264,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                     val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                     if (!matches.isNullOrEmpty()) {
                         procesarTextoCapturado(matches[0])
-                    } else if (enPrimerPlano) {
+                    } else if (appEnPrimerPlano) {
                         reanudarEscucha(1000L)
                     }
                 }
@@ -269,18 +273,17 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 override fun onEvent(eventType: Int, params: Bundle?) {}
             })
         } catch (_: Exception) {
-            if (enPrimerPlano) reanudarEscucha(1500L)
+            if (appEnPrimerPlano) reanudarEscucha(1800L)
         }
     }
 
     private fun reanudarEscucha(retrasoMs: Long) {
         mainHandler.removeCallbacks(tareaEscucha)
-        if (!enPrimerPlano) return
         mainHandler.postDelayed(tareaEscucha, retrasoMs)
     }
 
     private val tareaEscucha = Runnable {
-        if (estaHablando || !enPrimerPlano) return@Runnable
+        if (estaHablando || !appEnPrimerPlano) return@Runnable
         try {
             silenciarTonosSistema(true)
             if (speechRecognizer == null) {
@@ -294,7 +297,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             speechRecognizer?.startListening(intent)
         } catch (_: Exception) {
             configurarReconocedor()
-            reanudarEscucha(1500L)
+            reanudarEscucha(1800L)
         }
     }
 
@@ -304,8 +307,15 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             speechRecognizer?.stopListening()
             speechRecognizer?.cancel()
         } catch (_: Exception) {
-        }
-        silenciarTonosSistema(false)
+        }\n        silenciarTonosSistema(false)
+    }
+
+    private fun obtenerFechaHoraExactaDispositivo(): String {
+        val ahora = Date()
+        val sdfHora = SimpleDateFormat("h:mm a", Locale("es", "PA"))
+        val sdfFecha = SimpleDateFormat("EEEE d 'de' MMMM 'de' yyyy", Locale("es", "PA"))
+        val zona = TimeZone.getDefault().id
+        return "${sdfHora.format(ahora)} (${sdfFecha.format(ahora)}, zona $zona)"
     }
 
     private fun procesarTextoCapturado(textoRaw: String) {
@@ -344,11 +354,23 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             return
         }
 
-        consultarGeminiDirecto(orden)
+        consultarDirectoAGemini(orden)
     }
 
     private fun ejecutarComandoLocalSiAplica(orden: String): Boolean {
         val lower = orden.lowercase(Locale.getDefault())
+
+        if (lower.contains("qué hora es") || lower.contains("que hora es") ||
+            lower.contains("dime la hora") || lower.contains("la hora por favor") ||
+            lower.contains("qué fecha es") || lower.contains("que fecha es") ||
+            lower.contains("qué día es") || lower.contains("que dia es")
+        ) {
+            val ahora = Date()
+            val horaStr = SimpleDateFormat("h:mm a", Locale("es", "PA")).format(ahora)
+            val fechaStr = SimpleDateFormat("EEEE d 'de' MMMM", Locale("es", "PA")).format(ahora)
+            hablar("Son exactamente las $horaStr, $fechaStr, señor.", "reposo_feliz")
+            return true
+        }
 
         if (lower.contains("cambia de forma") || lower.contains("otra forma")) {
             modoFormaManual = true
@@ -408,8 +430,9 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         return false
     }
 
-    private fun descubrirModeloDisponible(apiKey: String): String? {
-        modeloActivoCache?.let { return it }
+    private fun detectarModeloDisponible(apiKey: String): String {
+        modeloGeminiDetectado?.let { return it }
+
         try {
             val url = URL("https://generativelanguage.googleapis.com/v1beta/models?key=$apiKey")
             val conn = (url.openConnection() as HttpURLConnection).apply {
@@ -417,200 +440,164 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 connectTimeout = 8000
                 readTimeout = 8000
             }
-            val code = conn.responseCode
-            val stream = if (code in 200..299) conn.inputStream else conn.errorStream
-            val body = BufferedReader(InputStreamReader(stream, "UTF-8")).use { it.readText() }
-            conn.disconnect()
-
-            if (code in 200..299) {
+            if (conn.responseCode in 200..299) {
+                val body = BufferedReader(InputStreamReader(conn.inputStream, "UTF-8")).use { it.readText() }
                 val json = JSONObject(body)
-                val models = json.optJSONArray("models") ?: JSONArray()
-                val disponibles = ArrayList<String>()
-                for (i in 0 until models.length()) {
-                    val m = models.getJSONObject(i)
-                    val name = m.optString("name", "").removePrefix("models/")
-                    val methods = m.optJSONArray("supportedGenerationMethods")
-                    var soportaGenerate = false
-                    if (methods != null) {
-                        for (j in 0 until methods.length()) {
-                            if (methods.optString(j) == "generateContent") {
-                                soportaGenerate = true
-                                break
-                            }
+                val models = json.optJSONArray("models")
+                val candidatos = ArrayList<String>()
+                if (models != null) {
+                    for (i in 0 until models.length()) {
+                        val m = models.getJSONObject(i)
+                        val name = m.optString("name", "").removePrefix("models/")
+                        val methods = m.optJSONArray("supportedGenerationMethods")?.toString() ?: ""
+                        if (methods.contains("generateContent") && name.contains("gemini") && !name.contains("embedding") && !name.contains("vision")) {
+                            candidatos.add(name)
                         }
                     }
-                    if (soportaGenerate && name.contains("gemini") && !name.contains("embedding") && !name.contains("vision") && !name.contains("image")) {
-                        disponibles.add(name)
-                    }
                 }
-                val preferidos = listOf(
-                    "gemini-2.5-flash",
-                    "gemini-3-flash-preview",
-                    "gemini-2.5-pro",
-                    "gemini-flash-latest"
-                )
-                for (pref in preferidos) {
-                    if (disponibles.contains(pref)) {
-                        modeloActivoCache = pref
-                        return pref
-                    }
-                }
-                val flashCualquiera = disponibles.firstOrNull { it.contains("flash") }
-                if (flashCualquiera != null) {
-                    modeloActivoCache = flashCualquiera
-                    return flashCualquiera
-                }
-                if (disponibles.isNotEmpty()) {
-                    modeloActivoCache = disponibles[0]
-                    return disponibles[0]
+                val preferido = candidatos.firstOrNull { it.contains("flash") && !it.contains("8b") && !it.contains("thinking") }
+                    ?: candidatos.firstOrNull { it.contains("flash") }
+                    ?: candidatos.firstOrNull()
+
+                if (preferido != null) {
+                    modeloGeminiDetectado = preferido
+                    return preferido
                 }
             }
+            conn.disconnect()
         } catch (_: Exception) {
         }
-        return null
+
+        return "gemini-3.5-flash"
     }
 
-    private fun consultarGeminiDirecto(mensajeUsuario: String) {
-        val apiKey = BuildConfig.GEMINI_API_KEY.trim()
-        if (apiKey.isEmpty() || apiKey.startsWith("PON_AQUI")) {
-            hablar("El secreto GEMINI_API_KEY no llegó a la compilación, señor.", "alerta")
+    private fun consultarDirectoAGemini(mensajeUsuario: String) {
+        val apiKeyLimpia = GEMINI_API_KEY.trim()
+        if (apiKeyLimpia.isEmpty() || apiKeyLimpia.contains("PON_AQUI")) {
+            hablar("Falta configurar su secreto GEMINI_API_KEY en GitHub Actions, señor.", "alerta")
             return
         }
 
         thread {
-            val listaModelos = ArrayList<String>()
-            descubrirModeloDisponible(apiKey)?.let { listaModelos.add(it) }
-            for (fallback in listOf("gemini-2.5-flash", "gemini-3-flash-preview", "gemini-flash-latest", "gemini-2.5-pro")) {
-                if (!listaModelos.contains(fallback)) {
-                    listaModelos.add(fallback)
+            val modelo = detectarModeloDisponible(apiKeyLimpia)
+            val horaRealDispositivo = obtenerFechaHoraExactaDispositivo()
+
+            try {
+                val url = URL("https://generativelanguage.googleapis.com/v1beta/models/$modelo:generateContent?key=$apiKeyLimpia")
+                val conn = (url.openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+                    connectTimeout = 12000
+                    readTimeout = 20000
+                    doOutput = true
                 }
-            }
 
-            var ultimoDetalleError = "No se encontró un modelo compatible en su cuenta."
+                val instruccionSistema = """
+                    Eres Neythan, el asistente personal inteligente de Jonathan Caballero.
+                    Hablas en español con un tono formal, leal, claro y directo estilo J.A.R.V.I.S., llamándolo "señor".
+                    DATO EN TIEMPO REAL DEL TELÉFONO: La fecha y hora local exacta del dispositivo ahora mismo es: $horaRealDispositivo. Usa SIEMPRE este dato si preguntan por la hora, el día o el momento actual; nunca inventes la hora.
+                    Responde en máximo 2 o 3 oraciones completas, claras y naturales para ser leídas en voz alta sin cortarse. No uses asteriscos, markdown ni emojis.
+                    Al final de tu respuesta, escribe exactamente una etiqueta de emoción entre corchetes eligiendo solo una de estas opciones:
+                    [reposo_feliz], [saltando_azul], [corriendo_rapido], [recargando_bateria], [celebrando_confeti], [enamorado_corazones], [malicioso_cian], [asco_verde], [gafas_oscuras], [analizando], [furia_roja], [durmiendo_reposo].
+                """.trimIndent()
 
-            for (modelo in listaModelos) {
-                try {
-                    val endpoint = "https://generativelanguage.googleapis.com/v1beta/models/$modelo:generateContent?key=$apiKey"
-                    val url = URL(endpoint)
-                    val conn = (url.openConnection() as HttpURLConnection).apply {
-                        requestMethod = "POST"
-                        setRequestProperty("Content-Type", "application/json; charset=UTF-8")
-                        setRequestProperty("Accept", "application/json")
-                        connectTimeout = 12000
-                        readTimeout = 20000
-                        doOutput = true
-                    }
+                val contentsArray = JSONArray()
+                for ((rol, texto) in historialConversacion.takeLast(6)) {
+                    val partObj = JSONObject().put("text", texto)
+                    val contentObj = JSONObject()
+                        .put("role", rol)
+                        .put("parts", JSONArray().put(partObj))
+                    contentsArray.put(contentObj)
+                }
 
-                    val instruccionSistema = "Eres NEYTHAN, un asistente virtual de inteligencia artificial con la personalidad formal, leal, precisa y directa de J.A.R.V.I.S. o Alfred. " +
-                        "Trata siempre al usuario como 'señor'. Responde de forma natural, clara y concisa (máximo 2 o 3 oraciones) para ser leída en voz alta, sin asteriscos ni emojis."
+                val userPart = JSONObject().put("text", mensajeUsuario)
+                contentsArray.put(
+                    JSONObject()
+                        .put("role", "user")
+                        .put("parts", JSONArray().put(userPart))
+                )
 
-                    val contentsArray = JSONArray()
-                    for ((rol, texto) in historialTurnos.takeLast(6)) {
-                        val turnObj = JSONObject().apply {
-                            put("role", rol)
-                            put("parts", JSONArray().put(JSONObject().put("text", texto)))
+                val bodyJson = JSONObject().apply {
+                    put("system_instruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", instruccionSistema))))
+                    put("contents", contentsArray)
+                    put("generationConfig", JSONObject().apply {
+                        put("temperature", 0.65)
+                        put("maxOutputTokens", 1200)
+                    })
+                }
+
+                OutputStreamWriter(conn.outputStream, "UTF-8").use { writer ->
+                    writer.write(bodyJson.toString())
+                    writer.flush()
+                }
+
+                val code = conn.responseCode
+                if (code in 200..299) {
+                    val raw = BufferedReader(InputStreamReader(conn.inputStream, "UTF-8")).use { it.readText() }
+                    val jsonResp = JSONObject(raw)
+                    val candidates = jsonResp.optJSONArray("candidates")
+                    var textoGenerado = ""
+                    if (candidates != null && candidates.length() > 0) {
+                        val content = candidates.getJSONObject(0).optJSONObject("content")
+                        val parts = content?.optJSONArray("parts")
+                        if (parts != null) {
+                            val sb = StringBuilder()
+                            for (i in 0 until parts.length()) {
+                                sb.append(parts.getJSONObject(i).optString("text", ""))
+                            }
+                            textoGenerado = sb.toString().trim()
                         }
-                        contentsArray.put(turnObj)
                     }
 
-                    val userTurn = JSONObject().apply {
-                        put("role", "user")
-                        put("parts", JSONArray().put(JSONObject().put("text", mensajeUsuario)))
-                    }
-                    contentsArray.put(userTurn)
-
-                    val payload = JSONObject().apply {
-                        put("system_instruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", instruccionSistema))))
-                        put("contents", contentsArray)
-                        put("generationConfig", JSONObject().apply {
-                            put("temperature", 0.7)
-                            put("maxOutputTokens", 280)
-                        })
+                    if (textoGenerado.isEmpty()) {
+                        textoGenerado = "Procesado correctamente, señor. [reposo_feliz]"
                     }
 
-                    OutputStreamWriter(conn.outputStream, "UTF-8").use { writer ->
-                        writer.write(payload.toString())
-                        writer.flush()
+                    var spriteExtraido = "reposo_feliz"
+                    val regexSprite = Regex("\\[([a-z0-9_]+)\\]")
+                    val match = regexSprite.find(textoGenerado)
+                    if (match != null) {
+                        spriteExtraido = match.groupValues[1]
+                        textoGenerado = textoGenerado.replace(regexSprite, "").trim()
                     }
 
-                    val code = conn.responseCode
-                    val stream = if (code in 200..299) conn.inputStream else conn.errorStream
-                    val responseText = if (stream != null) {
-                        BufferedReader(InputStreamReader(stream, "UTF-8")).use { it.readText() }
-                    } else {
-                        ""
+                    textoGenerado = textoGenerado.replace("*", "").replace("#", "").trim()
+
+                    historialConversacion.add(Pair("user", mensajeUsuario))
+                    historialConversacion.add(Pair("model", textoGenerado))
+
+                    val spriteFinal = if (obtenerBitmapSprite(spriteExtraido) != null) spriteExtraido else "reposo_feliz"
+                    mainHandler.post {
+                        hablar(textoGenerado, spriteFinal)
                     }
                     conn.disconnect()
-
-                    if (code in 200..299) {
-                        modeloActivoCache = modelo
-                        val jsonResp = JSONObject(responseText)
-                        val candidates = jsonResp.optJSONArray("candidates")
-                        val textoRespuesta = if (candidates != null && candidates.length() > 0) {
-                            val parts = candidates.getJSONObject(0)
-                                .optJSONObject("content")
-                                ?.optJSONArray("parts")
-                            if (parts != null && parts.length() > 0) {
-                                parts.getJSONObject(0).optString("text", "").trim()
-                            } else ""
-                        } else ""
-
-                        val respuestaLimpia = textoRespuesta
-                            .replace("*", "")
-                            .replace("#", "")
-                            .trim()
-                            .ifEmpty { "Procesado, señor." }
-
-                        historialTurnos.add("user" to mensajeUsuario)
-                        historialTurnos.add("model" to respuestaLimpia)
-                        if (historialTurnos.size > 12) {
-                            historialTurnos.removeAt(0)
-                            historialTurnos.removeAt(0)
-                        }
-
-                        val spriteElegido = elegirSpritePorContexto(respuestaLimpia)
-                        mainHandler.post {
-                            hablar(respuestaLimpia, spriteElegido)
-                        }
-                        return@thread
+                    return@thread
+                } else {
+                    modeloGeminiDetectado = null
+                    val errStream = conn.errorStream
+                    val errText = if (errStream != null) {
+                        BufferedReader(InputStreamReader(errStream, "UTF-8")).use { it.readText() }
                     } else {
-                        modeloActivoCache = null
-                        val errMsg = try {
-                            JSONObject(responseText).optJSONObject("error")?.optString("message", responseText) ?: responseText
-                        } catch (_: Exception) {
-                            responseText
-                        }
-                        ultimoDetalleError = "Error $code en $modelo: ${errMsg.take(110)}"
-                        if (code == 400 || code == 401 || code == 403) {
-                            break
-                        }
+                        "Sin detalle"
                     }
-                } catch (e: Exception) {
-                    ultimoDetalleError = "Fallo de red con $modelo: ${e.javaClass.simpleName} - ${e.message ?: "sin detalle"}"
+                    val detalleMsg = try {
+                        JSONObject(errText).optJSONObject("error")?.optString("message", errText) ?: errText
+                    } catch (_: Exception) {
+                        errText
+                    }
+                    conn.disconnect()
+                    mainHandler.post {
+                        hablar("Diagnóstico de Gemini ($modelo): Error $code - ${detalleMsg.take(110)}", "alerta")
+                    }
+                }
+            } catch (e: Exception) {
+                modeloGeminiDetectado = null
+                val tipoError = e.javaClass.simpleName
+                val msgError = e.localizedMessage ?: "sin mensaje"
+                mainHandler.post {
+                    hablar("Fallo de red con Gemini ($tipoError): ${msgError.take(90)}", "recargando_bateria")
                 }
             }
-
-            mainHandler.post {
-                hablar("Diagnóstico de conexión, señor: $ultimoDetalleError", "furia_roja")
-            }
-        }
-    }
-
-    private fun elegirSpritePorContexto(respuesta: String): String {
-        if (modoFormaManual) return spriteActualNombre
-        val txt = respuesta.lowercase(Locale.getDefault())
-        return when {
-            txt.contains("excelente") || txt.contains("logrado") || txt.contains("feliz") || txt.contains("listo") -> "saltando_azul"
-            txt.contains("rápido") || txt.contains("buscando") || txt.contains("ejecutando") -> "corriendo_rapido"
-            txt.contains("batería") || txt.contains("energía") -> "recargando_bateria"
-            txt.contains("asco") || txt.contains("virus") || txt.contains("basura") -> "asco_verde"
-            txt.contains("malicioso") || txt.contains("astuto") || txt.contains("secreto") -> "malicioso_cian"
-            txt.contains("amor") || txt.contains("encanta") || txt.contains("corazón") -> "enamorado_corazones"
-            txt.contains("error") || txt.contains("alerta") || txt.contains("peligro") -> "furia_roja"
-            txt.contains("triste") || txt.contains("lamento") -> "triste_llorando"
-            txt.contains("analizando") || txt.contains("pensando") || txt.contains("revisando") -> "pensando"
-            txt.contains("dormir") || txt.contains("reposo") -> "durmiendo_reposo"
-            else -> "reposo_feliz"
         }
     }
 
@@ -711,7 +698,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         }
         private val paintSubtitulo = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.WHITE
-            textSize = 40f
+            textSize = 36f
             textAlign = Paint.Align.CENTER
         }
         private val paintNucleo = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -736,7 +723,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             canvas.drawColor(Color.BLACK)
 
             val cx = width / 2f
-            val cy = height * 0.45f
+            val cy = height * 0.43f
             val tiempo = System.currentTimeMillis() / 1000.0
 
             val colorEstado = when (estadoActual) {
@@ -748,7 +735,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             }
 
             paintTextoEstado.color = colorEstado
-            canvas.drawText("ESTADO: $estadoActual ●", cx, height * 0.12f, paintTextoEstado)
+            canvas.drawText("ESTADO: $estadoActual ●", cx, height * 0.11f, paintTextoEstado)
 
             val pulso = (sin(tiempo * 4.0) * 14.0).toFloat() + (nivelVozUsuario * 6f)
             val radioBase = (width.coerceAtMost(height) * 0.34f) + pulso
@@ -788,11 +775,11 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 canvas.drawCircle(cx, cy + offsetMovimientoY, radioBase * 0.55f, paintNucleo)
             }
 
-            dibujarSubtituloMultilinea(canvas, subtituloPantalla, cx, height * 0.80f)
+            dibujarSubtituloMultilinea(canvas, subtituloPantalla, cx, height * 0.77f)
         }
 
         private fun dibujarSubtituloMultilinea(canvas: Canvas, texto: String, x: Float, yInicial: Float) {
-            val maxChars = 34
+            val maxChars = 36
             val palabras = texto.split(" ")
             val lineas = ArrayList<String>()
             var actual = ""
@@ -807,9 +794,9 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             if (actual.isNotEmpty()) lineas.add(actual)
 
             var y = yInicial
-            for (linea in lineas.take(4)) {
+            for (linea in lineas.take(6)) {
                 canvas.drawText(linea, x, y, paintSubtitulo)
-                y += 50f
+                y += 44f
             }
         }
     }
