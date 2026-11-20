@@ -68,6 +68,8 @@ jobs:
           chmod +x gradlew
 
       - name: Compilar APK Debug
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: ./gradlew assembleDebug
 
       - name: Subir APK compilado
