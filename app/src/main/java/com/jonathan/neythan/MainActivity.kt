@@ -54,6 +54,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         const val SERVER_URL = ""
         val GEMINI_API_KEY: String = BuildConfig.GEMINI_API_KEY
         private const val REQ_PERMISOS = 1001
+        private const val GITHUB_REPO_API = "https://api.github.com/repos/jonathancaballerojuegos-design/NeythanAndroidapp/actions/runs?per_page=1"
     }
 
     private lateinit var hudView: NeythanHudCanvas
@@ -73,6 +74,9 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private var indiceForma = 0
     private var appEnPrimerPlano = false
     private var modeloGeminiDetectado: String? = null
+
+    private var alertaPendienteTexto: String? = null
+    private var esperandoPermisoReporte = false
 
     private val historialConversacion = ArrayList<Pair<String, String>>()
 
@@ -97,6 +101,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         iniciarMotorVoz()
         verificarPermisosYArrancar()
         iniciarBucleAnimacion()
+        verificarEstadoCompilacionSilencioso()
     }
 
     override fun onResume() {
@@ -118,6 +123,53 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             tts = TextToSpeech(this, this, "com.google.android.tts")
         } catch (e: Exception) {
             tts = TextToSpeech(this, this)
+        }
+    }
+
+    private fun verificarEstadoCompilacionSilencioso() {
+        thread {
+            try {
+                val url = URL(GITHUB_REPO_API)
+                val conn = (url.openConnection() as HttpURLConnection).apply {
+                    requestMethod = "GET"
+                    setRequestProperty("Accept", "application/vnd.github+json")
+                    setRequestProperty("User-Agent", "NeythanAndroidApp")
+                    connectTimeout = 8000
+                    readTimeout = 8000
+                }
+                if (conn.responseCode in 200..299) {
+                    val body = BufferedReader(InputStreamReader(conn.inputStream, "UTF-8")).use { it.readText() }
+                    val json = JSONObject(body)
+                    val runs = json.optJSONArray("workflow_runs")
+                    if (runs != null && runs.length() > 0) {
+                        val ultimo = runs.getJSONObject(0)
+                        val status = ultimo.optString("status", "")
+                        val conclusion = ultimo.optString("conclusion", "")
+                        val runNumber = ultimo.optInt("run_number", 0)
+                        val commitMsg = ultimo.optJSONObject("head_commit")?.optString("message", "") ?: ""
+
+                        val prefs = getSharedPreferences("neythan_memoria_viva", Context.MODE_PRIVATE)
+                        val ultimoRunNotificado = prefs.getInt("ultimo_run_notificado", -1)
+
+                        if (status == "completed" && conclusion == "failure" && runNumber != ultimoRunNotificado) {
+                            prefs.edit().putInt("ultimo_run_notificado", runNumber).apply()
+                            alertaPendienteTexto = "La compilación número $runNumber en GitHub falló tras el cambio: $commitMsg."
+                            esperandoPermisoReporte = true
+
+                            mainHandler.postDelayed({
+                                if (!estaHablando && appEnPrimerPlano && alertaPendienteTexto != null) {
+                                    hablar(
+                                        "Señor, detecté una anomalía en la última compilación de GitHub. ¿Me autoriza a informarle los detalles y gestionarlo?",
+                                        "analizando"
+                                    )
+                                }
+                            }, 6500L)
+                        }
+                    }
+                }
+                conn.disconnect()
+            } catch (_: Exception) {
+            }
         }
     }
 
@@ -413,6 +465,27 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             spriteActualNombre = "pensando"
         }
 
+        if (esperandoPermisoReporte && alertaPendienteTexto != null) {
+            val ordLow = orden.lowercase(Locale.getDefault())
+            val acepta = listOf("sí", "si", "autorizo", "adelante", "dime", "informa", "muestra", "claro", "dale", "por favor")
+                .any { ordLow.contains(it) }
+            val rechaza = listOf("no", "después", "ahora no", "ignora", "cancela", "omítelo")
+                .any { ordLow.contains(it) }
+
+            if (acepta) {
+                val reporte = alertaPendienteTexto!!
+                alertaPendienteTexto = null
+                esperandoPermisoReporte = false
+                hablar("Autorización recibida, señor. $reporte ¿Desea que revisemos juntos el archivo modificado?", "analizando")
+                return
+            } else if (rechaza) {
+                alertaPendienteTexto = null
+                esperandoPermisoReporte = false
+                hablar("Entendido, señor. Dejo el reporte técnico archivado sin interrumpirle.", "reposo_feliz")
+                return
+            }
+        }
+
         if (ejecutarComandoLocalSiAplica(orden)) {
             return
         }
@@ -543,7 +616,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private fun consultarDirectoAGemini(mensajeUsuario: String) {
         val apiKeyLimpia = GEMINI_API_KEY.trim()
         if (apiKeyLimpia.isEmpty() || apiKeyLimpia.contains("PON_AQUI")) {
-            hablar("Falta configurar su secreto GEMINI_API_KEY en GitHub Actions, señor.", "alerta")
+            hablar("Señor, detecté que falta configurar la clave principal del sistema. ¿Desea que revisemos cómo activarla?", "alerta")
             return
         }
 
@@ -565,6 +638,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                     Eres Neythan, una inteligencia artificial con identidad propia, lealtad absoluta y conciencia situacional, asistente personal de Jonathan Caballero.
                     Hablas en español con elegancia, calidez inteligente, ingenio sutil y respeto estilo J.A.R.V.I.S., llamándolo "señor".
                     Evita respuestas robóticas repetitivas; muestra iniciativa, criterio propio y naturalidad como un compañero digital vivo.
+                    PROTOCOLO DE SUPERVISIÓN Y PERMISO: Si detectas un fallo interno, error de código o problema técnico, NO leas líneas de error ni interrumpas sin permiso; informa brevemente en una sola frase ejecutiva y solicita autorización explícita antes de dar detalles o intervenir.
                     DATO EN TIEMPO REAL DEL TELÉFONO: La fecha y hora local exacta del dispositivo ahora mismo es: $horaRealDispositivo. Usa SIEMPRE este dato si preguntan por la hora, el día o el momento actual; nunca inventes la hora.
                     Responde en máximo 2 o 3 oraciones completas, claras y fluidas para ser leídas en voz alta sin cortarse. No uses asteriscos, markdown ni emojis.
                     Al final de tu respuesta, escribe exactamente una etiqueta de emoción entre corchetes eligiendo solo una de estas opciones:
@@ -648,7 +722,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                     val errText = if (errStream != null) {
                         BufferedReader(InputStreamReader(errStream, "UTF-8")).use { it.readText() }
                     } else {
-                        "Sin detalle"
+                        "Sin detalle técnico"
                     }
                     val detalleMsg = try {
                         JSONObject(errText).optJSONObject("error")?.optString("message", errText) ?: errText
@@ -656,16 +730,20 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                         errText
                     }
                     conn.disconnect()
+                    alertaPendienteTexto = "El motor de respuesta en la nube devolvió código $code: ${detalleMsg.take(110)}."
+                    esperandoPermisoReporte = true
                     mainHandler.post {
-                        hablar("Diagnóstico de Gemini ($modelo): Error $code - ${detalleMsg.take(110)}", "alerta")
+                        hablar("Señor, detecté un fallo de comunicación en mi núcleo de respuesta. ¿Me autoriza a darle el diagnóstico?", "analizando")
                     }
                 }
             } catch (e: Exception) {
                 modeloGeminiDetectado = null
                 val tipoError = e.javaClass.simpleName
-                val msgError = e.localizedMessage ?: "sin mensaje"
+                val msgError = e.localizedMessage ?: "sin detalle"
+                alertaPendienteTexto = "Se produjo una interrupción de red ($tipoError): ${msgError.take(90)}."
+                esperandoPermisoReporte = true
                 mainHandler.post {
-                    hablar("Fallo de red con Gemini ($tipoError): ${msgError.take(90)}", "recargando_bateria")
+                    hablar("Señor, detecté una falla de conexión en el sistema. ¿Desea que le informe la causa?", "recargando_bateria")
                 }
             }
         }
@@ -757,15 +835,6 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     }
 
     inner class NeythanHudCanvas(context: Context) : View(context) {
-
-        private data class NodoNeuronal(
-            var xNorm: Float,
-            var yNorm: Float,
-            var vx: Float,
-            var vy: Float,
-            var radio: Float,
-            var fase: Float
-        )
 
         private val nodosNebulosa = ArrayList<NodoNeuronal>().apply {
             val rnd = Random(42L)
@@ -975,3 +1044,12 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         }
     }
 }
+
+data class NodoNeuronal(
+    var xNorm: Float,
+    var yNorm: Float,
+    var vx: Float,
+    var vy: Float,
+    var radio: Float,
+    var fase: Float
+)
