@@ -307,7 +307,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             speechRecognizer?.stopListening()
             speechRecognizer?.cancel()
         } catch (_: Exception) {
-        }\n        silenciarTonosSistema(false)
+        }
+        silenciarTonosSistema(false)
     }
 
     private fun obtenerFechaHoraExactaDispositivo(): String {
