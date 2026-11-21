@@ -1,5 +1,6 @@
 package com.jonathan.neythan
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -7,6 +8,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
@@ -39,10 +41,11 @@ import kotlin.concurrent.thread
 class NeythanBackgroundService : Service(), TextToSpeech.OnInitListener {
 
     companion object {
-        const val CHANNEL_ID = "neythan_bg_channel_v3"
+        const val CHANNEL_ID = "neythan_bg_channel_v4"
         const val NOTIF_ID = 7001
         const val ACTION_PAUSAR_ESCUCHA = "com.jonathan.neythan.PAUSAR_ESCUCHA"
         const val ACTION_REANUDAR_ESCUCHA = "com.jonathan.neythan.REANUDAR_ESCUCHA"
+        const val GITHUB_OWNER = "jonathan" // Reemplazar con su usuario exacto de GitHub
         @Volatile
         var pantallaPrincipalActiva: Boolean = false
     }
@@ -55,7 +58,7 @@ class NeythanBackgroundService : Service(), TextToSpeech.OnInitListener {
     private var estaHablando = false
     private var escuchaPausadaPorUI = false
     private var conversacionActivaHasta = 0L
-    private var backoffMs = 1600L
+    private var backoffMs = 1500L
 
     private val historialMemoria = ArrayList<Pair<String, String>>()
 
@@ -63,10 +66,16 @@ class NeythanBackgroundService : Service(), TextToSpeech.OnInitListener {
         super.onCreate()
         iniciarNotificacionPrimerPlano()
         iniciarMotorVoz()
-        programarEscucha(1400L)
+        NeythanSupervisor.auditarSistemaSilencioso(this, GITHUB_OWNER) { aviso ->
+            if (!pantallaPrincipalActiva && !estaHablando) {
+                hablarEnSegundoPlano(aviso, esAvisoIntermedio = false)
+            }
+        }
+        programarEscucha(1200L)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        iniciarNotificacionPrimerPlano()
         when (intent?.action) {
             ACTION_PAUSAR_ESCUCHA -> {
                 escuchaPausadaPorUI = true
@@ -74,13 +83,15 @@ class NeythanBackgroundService : Service(), TextToSpeech.OnInitListener {
             }
             ACTION_REANUDAR_ESCUCHA -> {
                 escuchaPausadaPorUI = false
+                pantallaPrincipalActiva = false
                 if (!estaHablando) {
-                    programarEscucha(900L)
+                    programarEscucha(800L)
                 }
             }
             else -> {
-                if (!pantallaPrincipalActiva && !escuchaPausadaPorUI && !estaHablando) {
-                    programarEscucha(1200L)
+                escuchaPausadaPorUI = false
+                if (!pantallaPrincipalActiva && !estaHablando) {
+                    programarEscucha(1000L)
                 }
             }
         }
@@ -126,14 +137,18 @@ class NeythanBackgroundService : Service(), TextToSpeech.OnInitListener {
             .setOngoing(true)
             .build()
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIF_ID,
-                notificacion,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-            )
-        } else {
-            startForeground(NOTIF_ID, notificacion)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(
+                    NOTIF_ID,
+                    notificacion,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                )
+            } else {
+                startForeground(NOTIF_ID, notificacion)
+            }
+        } catch (e: Exception) {
+            NeythanSupervisor.registrarErrorInterno(this, "ForegroundService", e.message ?: "Error al iniciar servicio")
         }
     }
 
@@ -172,7 +187,7 @@ class NeythanBackgroundService : Service(), TextToSpeech.OnInitListener {
                             conversacionActivaHasta = System.currentTimeMillis() + 18000L
                             backoffMs = 1500L
                             if (!pantallaPrincipalActiva && !escuchaPausadaPorUI) {
-                                programarEscucha(1100L)
+                                programarEscucha(1000L)
                             }
                         }
                     }
@@ -191,6 +206,7 @@ class NeythanBackgroundService : Service(), TextToSpeech.OnInitListener {
             ttsListo = true
         } else {
             ttsListo = false
+            NeythanSupervisor.registrarErrorInterno(this, "TextToSpeech", "Fallo al inicializar motor de voz ($status)")
         }
     }
 
@@ -218,7 +234,16 @@ class NeythanBackgroundService : Service(), TextToSpeech.OnInitListener {
 
     private fun inicializarReconocedor() {
         liberarMicrofonoEstricto()
-        if (!SpeechRecognizer.isRecognitionAvailable(this)) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
+            checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED
+        ) {
+            NeythanSupervisor.registrarErrorInterno(this, "PermisoMicrofono", "Permiso RECORD_AUDIO no concedido")
+            return
+        }
+        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+            NeythanSupervisor.registrarErrorInterno(this, "SpeechRecognizer", "Servicio de voz no disponible en el dispositivo")
+            return
+        }
         try {
             speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)
             speechRecognizer?.setRecognitionListener(object : RecognitionListener {
@@ -229,7 +254,12 @@ class NeythanBackgroundService : Service(), TextToSpeech.OnInitListener {
                 override fun onEndOfSpeech() {}
 
                 override fun onError(error: Int) {
-                    backoffMs = (backoffMs + 400L).coerceAtMost(3600L)
+                    if (error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS ||
+                        error == SpeechRecognizer.ERROR_CLIENT
+                    ) {
+                        NeythanSupervisor.registrarErrorInterno(this@NeythanBackgroundService, "AudioVoz", "Código de error $error en reconocimiento de voz")
+                    }
+                    backoffMs = (backoffMs + 400L).coerceAtMost(3500L)
                     if (!estaHablando && !pantallaPrincipalActiva && !escuchaPausadaPorUI) {
                         programarEscucha(backoffMs)
                     }
@@ -241,7 +271,7 @@ class NeythanBackgroundService : Service(), TextToSpeech.OnInitListener {
                         backoffMs = 1500L
                         procesarVozSegundoPlano(matches[0])
                     } else {
-                        backoffMs = (backoffMs + 350L).coerceAtMost(3600L)
+                        backoffMs = (backoffMs + 350L).coerceAtMost(3500L)
                         if (!estaHablando && !pantallaPrincipalActiva && !escuchaPausadaPorUI) {
                             programarEscucha(backoffMs)
                         }
@@ -251,7 +281,8 @@ class NeythanBackgroundService : Service(), TextToSpeech.OnInitListener {
                 override fun onPartialResults(partialResults: Bundle?) {}
                 override fun onEvent(eventType: Int, params: Bundle?) {}
             })
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            NeythanSupervisor.registrarErrorInterno(this, "SpeechRecognizerInit", e.message ?: "Excepción al crear reconocedor")
             programarEscucha(2500L)
         }
     }
@@ -271,10 +302,13 @@ class NeythanBackgroundService : Service(), TextToSpeech.OnInitListener {
             val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE, "es-MX")
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 2000L)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 2000L)
                 putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
             }
             speechRecognizer?.startListening(intent)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            NeythanSupervisor.registrarErrorInterno(this, "StartListening", e.message ?: "Error al iniciar escucha")
             inicializarReconocedor()
             programarEscucha(2200L)
         }
@@ -288,7 +322,7 @@ class NeythanBackgroundService : Service(), TextToSpeech.OnInitListener {
         val enVentanaActiva = System.currentTimeMillis() < conversacionActivaHasta
 
         if (!detectado && !enVentanaActiva) {
-            backoffMs = (backoffMs + 300L).coerceAtMost(3600L)
+            backoffMs = (backoffMs + 300L).coerceAtMost(3500L)
             programarEscucha(backoffMs)
             return
         }
@@ -300,6 +334,16 @@ class NeythanBackgroundService : Service(), TextToSpeech.OnInitListener {
 
         if (orden.isEmpty()) {
             hablarEnSegundoPlano("A sus órdenes en segundo plano, señor. ¿Qué necesita?", esAvisoIntermedio = false)
+            return
+        }
+
+        if (NeythanSupervisor.esRespuestaDeAutorizacion(orden)) {
+            NeythanSupervisor.ejecutarAnalisisYGuardarEnNotas(
+                context = this,
+                githubOwner = GITHUB_OWNER,
+                onInicio = { msgInicio -> hablarEnSegundoPlano(msgInicio, esAvisoIntermedio = true) },
+                onFinalizado = { msgFin -> hablarEnSegundoPlano(msgFin, esAvisoIntermedio = false) }
+            )
             return
         }
 
@@ -446,6 +490,7 @@ class NeythanBackgroundService : Service(), TextToSpeech.OnInitListener {
             }
 
             if (apiKey.isEmpty()) {
+                NeythanSupervisor.registrarErrorInterno(this, "GeminiAPI", "BuildConfig.GEMINI_API_KEY está vacía")
                 mainHandler.post {
                     hablarEnSegundoPlano(
                         "La clave de Gemini no está configurada en esta compilación, señor.",
@@ -544,6 +589,7 @@ class NeythanBackgroundService : Service(), TextToSpeech.OnInitListener {
                     }
                     hablarEnSegundoPlano(prefijo + respuestaFinal!!, esAvisoIntermedio = false)
                 } else {
+                    NeythanSupervisor.registrarErrorInterno(this, "GeminiConexion", "Ningún modelo respondió en segundo plano")
                     hablarEnSegundoPlano(
                         "No logré completar la consulta en este momento debido a una intermitencia de red, señor.",
                         esAvisoIntermedio = false
