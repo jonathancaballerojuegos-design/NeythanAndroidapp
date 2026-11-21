@@ -20,11 +20,18 @@
     <!-- Permiso para burbuja flotante sobre otras aplicaciones -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
-    <!-- Visibilidad de paquetes en Android 11+ (Spotify y motor de voz/TTS) -->
+    <!-- Permiso para ver y abrir cualquier aplicacion instalada en Android 11+ (SDK 30-34) -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+
+    <!-- Visibilidad de paquetes y motores de voz/TTS -->
     <queries>
         <package android:name="com.spotify.music" />
         <package android:name="com.google.android.tts" />
         <package android:name="com.google.android.googlequicksearchbox" />
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
         <intent>
             <action android:name="android.speech.RecognitionService" />
         </intent>
