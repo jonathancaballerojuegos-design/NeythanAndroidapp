@@ -14,7 +14,6 @@ import android.graphics.Paint
 import android.graphics.RadialGradient
 import android.graphics.Shader
 import android.graphics.Typeface
-import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -47,6 +46,7 @@ import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
+import java.text.Normalizer
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -98,9 +98,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private var escuchandoEnCurso = false
     private var escuchaActiva = true
     private var conversacionActivaHasta = 0L
-    private var backoffEscuchaMs = 1800L
-    private var volumenNotifPrevio = -1
-    private var volumenSysPrevio = -1
+    private var backoffEscuchaMs = 700L
 
     // 2 Núcleos Básicos (siempre activos)
     private var nucleoBasico1Voz = true
@@ -113,7 +111,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private var nucleoTactico4Proactivo = false
     private var nucleoTactico5Supervisor = false
 
-    private var modeloGeminiDetectado: String? = "gemini-2.5-flash"
+    private var modeloGeminiDetectado: String = "gemini-2.5-flash"
     private val historialTurnos = ArrayList<Pair<String, String>>()
     private val consolaBuffer = StringBuilder()
 
@@ -146,34 +144,31 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         } catch (_: Exception) {
         }
         if (escuchaActiva && !estaHablando) {
-            reanudarEscucha(1000L)
+            destruirReconocedorSeguro()
+            reanudarEscucha(700L)
         }
     }
 
     override fun onPause() {
         super.onPause()
-        detenerEscuchaTemporal()
-        restaurarTonosSistema()
+        destruirReconocedorSeguro()
         if (escuchaActiva) {
-            iniciarServiciosPersistentes()
+            mainHandler.postDelayed({
+                iniciarServiciosPersistentes()
+            }, 350L)
         }
     }
 
     override fun onDestroy() {
         super.onDestroy()
         mainHandler.removeCallbacksAndMessages(null)
-        try {
-            speechRecognizer?.destroy()
-            speechRecognizer = null
-        } catch (_: Exception) {
-        }
+        destruirReconocedorSeguro()
         try {
             tts?.stop()
             tts?.shutdown()
             tts = null
         } catch (_: Exception) {
         }
-        restaurarTonosSistema()
     }
 
     private fun construirInterfazHud() {
@@ -183,7 +178,6 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             setPadding(dp(12), dp(10), dp(12), dp(10))
         }
 
-        // Banner táctico de NeythanSupervisor (oculto hasta detectar anomalías)
         panelAlertaSupervisor = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.parseColor("#2A0A14"))
@@ -273,7 +267,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         }
 
         val btnLimpiar = Button(this).apply {
-            text = "LIMPIAR ✕"
+            text = "LIMPIAR X"
             setTextColor(Color.parseColor("#7FA8C9"))
             setBackgroundColor(Color.parseColor("#102038"))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
@@ -317,27 +311,28 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             setPadding(dp(8), dp(6), dp(8), dp(6))
         }
         btnMicrofono = Button(this).apply {
-            text = "🎙"
+            text = "MIC"
             setTextColor(Color.parseColor("#00F0FF"))
             setBackgroundColor(Color.parseColor("#112640"))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            typeface = Typeface.MONOSPACE
             setOnClickListener {
                 escuchaActiva = !escuchaActiva
                 if (escuchaActiva) {
                     setTextColor(Color.parseColor("#00F0FF"))
                     estadoActual = "ESCUCHANDO"
-                    backoffEscuchaMs = 1500L
-                    reanudarEscucha(400L)
+                    backoffEscuchaMs = 700L
+                    destruirReconocedorSeguro()
+                    reanudarEscucha(300L)
                 } else {
                     setTextColor(Color.parseColor("#FF5252"))
-                    detenerEscuchaTemporal()
-                    restaurarTonosSistema()
+                    destruirReconocedorSeguro()
                     estadoActual = "PAUSADO"
                 }
             }
         }
         inputComando = EditText(this).apply {
-            hint = "Orden, consulta o búsqueda de archivo..."
+            hint = "Orden, consulta o abrir app..."
             setHintTextColor(Color.parseColor("#4A6B88"))
             setTextColor(Color.WHITE)
             setBackgroundColor(Color.parseColor("#0E1B2E"))
@@ -360,10 +355,11 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             }
         }
         val btnEnviar = Button(this).apply {
-            text = "➤"
+            text = "ENVIAR"
             setTextColor(Color.parseColor("#040810"))
             setBackgroundColor(Color.parseColor("#00E5FF"))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            typeface = Typeface.MONOSPACE
             setOnClickListener { enviarTextoDesdeCaja() }
         }
         barraEntrada.addView(btnMicrofono)
@@ -377,7 +373,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         val texto = inputComando.text.toString().trim()
         if (texto.isNotEmpty()) {
             inputComando.setText("")
-            conversacionActivaHasta = System.currentTimeMillis() + 25000L
+            conversacionActivaHasta = System.currentTimeMillis() + 30000L
             procesarOrdenDirecta(texto)
         }
     }
@@ -388,9 +384,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 consolaBuffer.delete(0, 2500)
             }
             if (consolaBuffer.isNotEmpty()) {
-                consolaBuffer.append("
-
-")
+                consolaBuffer.append("\n\n")
             }
             consolaBuffer.append("[$emisor]: $mensaje")
             txtConsola.text = consolaBuffer.toString()
@@ -421,36 +415,6 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         }, duracionMs)
     }
 
-    private fun silenciarTonosSistema() {
-        try {
-            val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            if (volumenNotifPrevio == -1) {
-                volumenNotifPrevio = am.getStreamVolume(AudioManager.STREAM_NOTIFICATION)
-            }
-            if (volumenSysPrevio == -1) {
-                volumenSysPrevio = am.getStreamVolume(AudioManager.STREAM_SYSTEM)
-            }
-            am.setStreamVolume(AudioManager.STREAM_NOTIFICATION, 0, 0)
-            am.setStreamVolume(AudioManager.STREAM_SYSTEM, 0, 0)
-        } catch (_: Exception) {
-        }
-    }
-
-    private fun restaurarTonosSistema() {
-        try {
-            val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            if (volumenNotifPrevio >= 0) {
-                am.setStreamVolume(AudioManager.STREAM_NOTIFICATION, volumenNotifPrevio, 0)
-                volumenNotifPrevio = -1
-            }
-            if (volumenSysPrevio >= 0) {
-                am.setStreamVolume(AudioManager.STREAM_SYSTEM, volumenSysPrevio, 0)
-                volumenSysPrevio = -1
-            }
-        } catch (_: Exception) {
-        }
-    }
-
     private fun iniciarMotorVoz() {
         try {
             tts = TextToSpeech(this, this, "com.google.android.tts")
@@ -472,7 +436,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                     mainHandler.post {
                         estaHablando = true
                         pulsoSilabaVoz = 0.85f
-                        detenerEscuchaTemporal()
+                        destruirReconocedorSeguro()
                         estadoActual = "HABLANDO"
                     }
                 }
@@ -490,9 +454,9 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                         estaHablando = false
                         pulsoSilabaVoz = 0f
                         estadoActual = if (escuchaActiva) "ESCUCHANDO" else "PAUSADO"
-                        conversacionActivaHasta = System.currentTimeMillis() + 22000L
-                        backoffEscuchaMs = 1500L
-                        if (escuchaActiva) reanudarEscucha(1300L)
+                        conversacionActivaHasta = System.currentTimeMillis() + 30000L
+                        backoffEscuchaMs = 700L
+                        if (escuchaActiva) reanudarEscucha(600L)
                     }
                 }
 
@@ -502,7 +466,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                         estaHablando = false
                         pulsoSilabaVoz = 0f
                         estadoActual = if (escuchaActiva) "ESCUCHANDO" else "PAUSADO"
-                        if (escuchaActiva) reanudarEscucha(1500L)
+                        if (escuchaActiva) reanudarEscucha(800L)
                     }
                 }
             })
@@ -511,7 +475,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             hablar(saludoInicial)
         } else {
             agregarMensajeConsola("N.E.Y.T.H.A.N.", "Núcleos en línea, señor. Motor de voz en modo texto.")
-            reanudarEscucha(1500L)
+            reanudarEscucha(900L)
         }
     }
 
@@ -526,10 +490,10 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             else -> "Trabajando en turno nocturno, señor."
         }
         val variantes = listOf(
-            "$franja Los dos núcleos básicos, cinco núcleos tácticos y el enlace directo a Gemini están operativos. ¿Qué misión iniciamos?",
-            "$franja Núcleo geodésico estabilizado, supervisor activo y conexión directa con Gemini lista. Estoy atento a sus instrucciones.",
+            "$franja Los núcleos tácticos, el lanzador universal de aplicaciones y el enlace directo a Gemini están operativos. ¿Qué misión iniciamos?",
+            "$franja Núcleo geodésico estabilizado, escucha continua calibrada y conexión directa con Gemini lista. Estoy atento a sus instrucciones.",
             "$franja Todos los sistemas sensoriales, documentales y cognitivos en línea. ¿En qué puedo asistirle hoy?",
-            "$franja Vigilancia activa y enlace directo despejado. Dígame cómo procedemos."
+            "$franja Vigilancia activa y canales despejados. Dígame cómo procedemos."
         )
         var nuevoIdx = Random.nextInt(variantes.size)
         if (nuevoIdx == ultimoIndice && variantes.size > 1) {
@@ -556,7 +520,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             return
         }
         solicitarExencionBateria()
-        reanudarEscucha(1500L)
+        reanudarEscucha(1000L)
     }
 
     override fun onRequestPermissionsResult(
@@ -569,7 +533,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             indexarArchivosDispositivoSilencioso()
             if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
                 solicitarExencionBateria()
-                reanudarEscucha(1000L)
+                reanudarEscucha(700L)
             } else {
                 agregarMensajeConsola("N.E.Y.T.H.A.N.", "Permiso de micrófono requerido para la escucha continua, señor.")
             }
@@ -624,10 +588,25 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         }
     }
 
+    private fun destruirReconocedorSeguro() {
+        mainHandler.removeCallbacks(tareaEscucha)
+        try {
+            speechRecognizer?.cancel()
+            speechRecognizer?.destroy()
+        } catch (_: Exception) {
+        }
+        speechRecognizer = null
+        escuchandoEnCurso = false
+        nivelVozUsuario = 0f
+    }
+
     private fun configurarReconocedor() {
         try {
-            speechRecognizer?.destroy()
-            if (!SpeechRecognizer.isRecognitionAvailable(this)) return
+            destruirReconocedorSeguro()
+            if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+                agregarMensajeConsola("SUPERVISOR", "Servicio de reconocimiento de voz no disponible en el sistema.")
+                return
+            }
             speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)
             speechRecognizer?.setRecognitionListener(object : RecognitionListener {
                 override fun onReadyForSpeech(params: Bundle?) {
@@ -638,7 +617,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 }
 
                 override fun onBeginningOfSpeech() {
-                    backoffEscuchaMs = 1500L
+                    backoffEscuchaMs = 700L
                 }
 
                 override fun onRmsChanged(rmsdB: Float) {
@@ -655,8 +634,14 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 override fun onError(error: Int) {
                     nivelVozUsuario = 0f
                     escuchandoEnCurso = false
+                    if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY ||
+                        error == SpeechRecognizer.ERROR_CLIENT ||
+                        error == SpeechRecognizer.ERROR_AUDIO
+                    ) {
+                        destruirReconocedorSeguro()
+                    }
                     if (!estaHablando && escuchaActiva) {
-                        backoffEscuchaMs = (backoffEscuchaMs + 600L).coerceAtMost(3500L)
+                        backoffEscuchaMs = (backoffEscuchaMs + 300L).coerceAtMost(2200L)
                         reanudarEscucha(backoffEscuchaMs)
                     }
                 }
@@ -664,21 +649,27 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 override fun onResults(results: Bundle?) {
                     nivelVozUsuario = 0f
                     escuchandoEnCurso = false
-                    backoffEscuchaMs = 1500L
+                    backoffEscuchaMs = 700L
                     val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                     if (!matches.isNullOrEmpty()) {
                         procesarTextoCapturado(matches[0])
                     } else if (escuchaActiva && !estaHablando) {
-                        reanudarEscucha(1500L)
+                        reanudarEscucha(700L)
                     }
                 }
 
-                override fun onPartialResults(partialResults: Bundle?) {}
+                override fun onPartialResults(partialResults: Bundle?) {
+                    val parciales = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                    if (!parciales.isNullOrEmpty() && parciales[0].isNotBlank()) {
+                        estadoActual = "CAPTANDO..."
+                    }
+                }
+
                 override fun onEvent(eventType: Int, params: Bundle?) {}
             })
         } catch (_: Exception) {
             escuchandoEnCurso = false
-            if (escuchaActiva) reanudarEscucha(2500L)
+            if (escuchaActiva) reanudarEscucha(1500L)
         }
     }
 
@@ -690,38 +681,29 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     private val tareaEscucha = Runnable {
         if (estaHablando || !escuchaActiva || escuchandoEnCurso) return@Runnable
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
+            checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED
+        ) {
+            return@Runnable
+        }
         try {
-            silenciarTonosSistema()
             if (speechRecognizer == null) {
                 configurarReconocedor()
             }
             val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE, "es-MX")
+                putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
                 putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
-                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 2200L)
-                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1800L)
-                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 1200L)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1600L)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1400L)
             }
             escuchandoEnCurso = true
             speechRecognizer?.startListening(intent)
         } catch (_: Exception) {
-            escuchandoEnCurso = false
-            if (escuchaActiva) reanudarEscucha(2500L)
+            destruirReconocedorSeguro()
+            if (escuchaActiva) reanudarEscucha(1500L)
         }
-    }
-
-    private fun detenerEscuchaTemporal() {
-        mainHandler.removeCallbacks(tareaEscucha)
-        try {
-            if (escuchandoEnCurso) {
-                speechRecognizer?.stopListening()
-                speechRecognizer?.cancel()
-            }
-        } catch (_: Exception) {
-        }
-        escuchandoEnCurso = false
-        nivelVozUsuario = 0f
     }
 
     private fun hablar(texto: String) {
@@ -730,7 +712,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             val params = Bundle()
             tts?.speak(texto, TextToSpeech.QUEUE_FLUSH, params, "NEYTHAN_UTTERANCE")
         } else {
-            if (escuchaActiva) reanudarEscucha(1500L)
+            if (escuchaActiva) reanudarEscucha(900L)
         }
     }
 
@@ -740,6 +722,102 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             valor.toFloat(),
             resources.displayMetrics
         ).toInt()
+    }
+
+    // =========================================================================
+    // LANZADOR UNIVERSAL DE APLICACIONES INSTALADAS EN ANDROID
+    // =========================================================================
+
+    private fun normalizarTexto(texto: String): String {
+        val sinAcentos = Normalizer.normalize(texto.lowercase(Locale.getDefault()), Normalizer.Form.NFD)
+            .replace(Regex("\\p{InCombiningDiacriticalMarks}+"), "")
+        return sinAcentos.trim()
+    }
+
+    private fun abrirAplicacionPorNombre(nombreSolicitado: String): Boolean {
+        val limpio = normalizarTexto(nombreSolicitado)
+            .replace(Regex("^(la aplicacion|la app|aplicacion|app|por favor)\\s+"), "")
+            .replace(Regex("\\s+(por favor)$"), "")
+            .trim()
+
+        if (limpio.isEmpty()) return false
+
+        val alias = mapOf(
+            "camara" to "camera",
+            "configuracion" to "settings",
+            "ajustes" to "settings",
+            "galeria" to "gallery",
+            "fotos" to "photos",
+            "calculadora" to "calculator",
+            "reloj" to "clock",
+            "alarmas" to "clock",
+            "calendario" to "calendar",
+            "contactos" to "contacts",
+            "telefono" to "phone",
+            "mensajes" to "messages",
+            "correo" to "gmail",
+            "navegador" to "chrome",
+            "mapas" to "maps",
+            "archivos" to "files",
+            "notas" to "notes"
+        )
+        val terminoAlternativo = alias[limpio] ?: limpio
+
+        try {
+            val pm = packageManager
+            val mainIntent = Intent(Intent.ACTION_MAIN, null).apply {
+                addCategory(Intent.CATEGORY_LAUNCHER)
+            }
+            val appsInstaladas = pm.queryIntentActivities(mainIntent, 0)
+
+            var mejorPaquete: String? = null
+            var mejorNombreReal: String? = null
+
+            for (resolveInfo in appsInstaladas) {
+                val label = normalizarTexto(resolveInfo.loadLabel(pm).toString())
+                val pkg = resolveInfo.activityInfo.packageName
+                if (label == limpio || label == terminoAlternativo) {
+                    mejorPaquete = pkg
+                    mejorNombreReal = resolveInfo.loadLabel(pm).toString()
+                    break
+                }
+            }
+
+            if (mejorPaquete == null) {
+                for (resolveInfo in appsInstaladas) {
+                    val label = normalizarTexto(resolveInfo.loadLabel(pm).toString())
+                    val pkg = resolveInfo.activityInfo.packageName.lowercase(Locale.getDefault())
+                    if (label.contains(limpio) ||
+                        label.contains(terminoAlternativo) ||
+                        pkg.contains(limpio.replace(" ", "")) ||
+                        pkg.contains(terminoAlternativo.replace(" ", ""))
+                    ) {
+                        mejorPaquete = resolveInfo.activityInfo.packageName
+                        mejorNombreReal = resolveInfo.loadLabel(pm).toString()
+                        break
+                    }
+                }
+            }
+
+            if (mejorPaquete != null) {
+                val launchIntent = pm.getLaunchIntentForPackage(mejorPaquete)
+                if (launchIntent != null) {
+                    launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    activarNucleoTactico(3, 5000L)
+                    hablar("Abriendo $mejorNombreReal, señor.")
+                    mainHandler.postDelayed({
+                        try {
+                            startActivity(launchIntent)
+                        } catch (_: Exception) {
+                        }
+                    }, 450L)
+                    return true
+                }
+            }
+        } catch (e: Exception) {
+            agregarMensajeConsola("SUPERVISOR", "Error al buscar app '$limpio': ${e.message}")
+        }
+        return false
     }
 
     // =========================================================================
@@ -759,7 +837,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private fun consultarGeminiDirecto(promptUsuario: String) {
         val apiKey = obtenerClaveGeminiSegura()
         if (apiKey.isEmpty()) {
-            hablar("Señor, el enlace directo está listo, pero BuildConfig.GEMINI_API_KEY llegó vacío en esta compilación. Verifique el workflow de GitHub Actions.")
+            hablar("Señor, el enlace directo está listo, pero BuildConfig.GEMINI_API_KEY llegó vacío. Verifique el secreto en GitHub Actions.")
             return
         }
 
@@ -768,8 +846,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
         thread {
             try {
-                val modelo = modeloGeminiDetectado ?: "gemini-2.5-flash"
-                val endpoint = "https://generativelanguage.googleapis.com/v1beta/models/$modelo:generateContent?key=$apiKey"
+                val endpoint = "https://generativelanguage.googleapis.com/v1beta/models/$modeloGeminiDetectado:generateContent?key=$apiKey"
                 val url = URL(endpoint)
                 val conn = (url.openConnection() as HttpURLConnection).apply {
                     requestMethod = "POST"
@@ -780,16 +857,12 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 }
 
                 val contentsArray = JSONArray()
+                val instruccionSistema = "Eres N.E.Y.T.H.A.N., un asistente táctico personal con estilo formal, directo y eficiente tipo J.A.R.V.I.S. Dirígete al usuario como señor. Responde en español de forma clara y concisa para lectura en voz alta."
 
-                // Instrucción de identidad en el primer turno
-                val systemPart = JSONObject().put(
-                    "text",
-                    "Eres N.E.Y.T.H.A.N., un asistente táctico personal con estilo formal, directo y eficiente tipo J.A.R.V.I.S. Dirígete al usuario como 'señor'. Responde en español de forma clara y concisa para lectura en voz alta."
-                )
                 contentsArray.put(
                     JSONObject()
                         .put("role", "user")
-                        .put("parts", JSONArray().put(systemPart))
+                        .put("parts", JSONArray().put(JSONObject().put("text", instruccionSistema)))
                 )
                 contentsArray.put(
                     JSONObject()
@@ -847,12 +920,12 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                     }
                 } else {
                     mainHandler.post { estadoActual = if (escuchaActiva) "ESCUCHANDO" else "PAUSADO" }
-                    hablar("El enlace directo con Gemini devolvió código $code, señor. Revise la consola para más detalles.")
+                    hablar("El enlace directo con Gemini devolvió código $code, señor. Revise la consola.")
                     agregarMensajeConsola("SUPERVISOR", "HTTP $code: ${respuestaCruda.take(300)}")
                 }
             } catch (e: Exception) {
                 mainHandler.post { estadoActual = if (escuchaActiva) "ESCUCHANDO" else "PAUSADO" }
-                hablar("Error de red al conectar directamente con Gemini, señor: ${e.message}")
+                hablar("Error de red al conectar con Gemini, señor: ${e.message}")
             }
         }
     }
@@ -864,17 +937,20 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private fun procesarTextoCapturado(textoCrudo: String) {
         val limpio = textoCrudo.trim()
         if (limpio.isEmpty()) {
-            if (escuchaActiva) reanudarEscucha(1200L)
+            if (escuchaActiva) reanudarEscucha(700L)
             return
         }
         val lower = limpio.lowercase(Locale.getDefault())
         val dentroDeVentana = System.currentTimeMillis() < conversacionActivaHasta
-        val contieneWakeWord = lower.contains("neythan") || lower.contains("nathan") || lower.contains("despierta")
+        val contieneWakeWord = lower.contains("neythan") ||
+            lower.contains("nathan") ||
+            lower.contains("neitan") ||
+            lower.contains("despierta")
 
         if (contieneWakeWord || dentroDeVentana) {
-            conversacionActivaHasta = System.currentTimeMillis() + 25000L
+            conversacionActivaHasta = System.currentTimeMillis() + 30000L
             val orden = limpio
-                .replace(Regex("(?i)\b(neythan|nathan|despierta)\b[,:\s]*"), "")
+                .replace(Regex("(?i)\\b(neythan|nathan|neitan|despierta)\\b[,:\\s]*"), "")
                 .trim()
             if (orden.isEmpty()) {
                 hablar("A sus órdenes, señor. Dígame.")
@@ -882,15 +958,15 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 procesarOrdenDirecta(orden)
             }
         } else {
-            if (escuchaActiva) reanudarEscucha(1000L)
+            if (escuchaActiva) reanudarEscucha(700L)
         }
     }
 
     private fun procesarOrdenDirecta(orden: String) {
         agregarMensajeConsola("SEÑOR", orden)
-        val lower = orden.lowercase(Locale.getDefault())
+        val lower = normalizarTexto(orden)
 
-        if (esperandoPermisoReporte && (lower.contains("autorizo") || lower.contains("sí") || lower.contains("si") || lower.contains("guarda"))) {
+        if (esperandoPermisoReporte && (lower.contains("autorizo") || lower == "si" || lower.contains("guarda"))) {
             panelAlertaSupervisor.visibility = View.GONE
             ejecutarDiagnosticoYGuardarEnNotas()
             return
@@ -898,12 +974,22 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
         if (lower.contains("buscar archivo") || lower.contains("busca archivo") || lower.contains("abrir archivo")) {
             activarNucleoTactico(3, 4500L)
-            val consulta = orden.replace(Regex("(?i)(buscar|busca|abrir)\s+archivo\s*"), "").trim()
+            val consulta = orden.replace(Regex("(?i)(buscar|busca|abrir)\\s+archivo\\s*"), "").trim()
             buscarEnIndiceArchivos(consulta)
             return
         }
 
-        // Enviar directamente a Gemini API (sin pasar por Render)
+        val matchAbrir = Regex("(?i)^(abre|abrir|inicia|iniciar|ejecuta|ejecutar|lanza|lanzar)\\s+(.+)$").find(orden.trim())
+        if (matchAbrir != null) {
+            val nombreApp = matchAbrir.groupValues[2].trim()
+            if (abrirAplicacionPorNombre(nombreApp)) {
+                return
+            } else {
+                hablar("No encontré la aplicación $nombreApp instalada en este dispositivo, señor.")
+                return
+            }
+        }
+
         consultarGeminiDirecto(orden)
     }
 
