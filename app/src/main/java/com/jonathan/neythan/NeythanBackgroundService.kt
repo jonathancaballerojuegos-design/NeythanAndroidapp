@@ -33,6 +33,7 @@ import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
+import java.text.Normalizer
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -45,7 +46,7 @@ class NeythanBackgroundService : Service(), TextToSpeech.OnInitListener {
         const val NOTIF_ID = 7001
         const val ACTION_PAUSAR_ESCUCHA = "com.jonathan.neythan.PAUSAR_ESCUCHA"
         const val ACTION_REANUDAR_ESCUCHA = "com.jonathan.neythan.REANUDAR_ESCUCHA"
-        const val GITHUB_OWNER = "jonathancaballerojuegos-design" // Reemplazar con su usuario exacto de GitHub
+        const val GITHUB_OWNER = "jonathancaballerojuegos-design"
         @Volatile
         var pantallaPrincipalActiva: Boolean = false
     }
@@ -57,8 +58,9 @@ class NeythanBackgroundService : Service(), TextToSpeech.OnInitListener {
 
     private var estaHablando = false
     private var escuchaPausadaPorUI = false
+    private var escuchandoEnCurso = false
     private var conversacionActivaHasta = 0L
-    private var backoffMs = 1500L
+    private var backoffMs = 900L
 
     private val historialMemoria = ArrayList<Pair<String, String>>()
 
@@ -71,7 +73,7 @@ class NeythanBackgroundService : Service(), TextToSpeech.OnInitListener {
                 hablarEnSegundoPlano(aviso, esAvisoIntermedio = false)
             }
         }
-        programarEscucha(1200L)
+        programarEscucha(900L)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -85,13 +87,14 @@ class NeythanBackgroundService : Service(), TextToSpeech.OnInitListener {
                 escuchaPausadaPorUI = false
                 pantallaPrincipalActiva = false
                 if (!estaHablando) {
-                    programarEscucha(800L)
+                    liberarMicrofonoEstricto()
+                    programarEscucha(600L)
                 }
             }
             else -> {
                 escuchaPausadaPorUI = false
                 if (!pantallaPrincipalActiva && !estaHablando) {
-                    programarEscucha(1000L)
+                    programarEscucha(800L)
                 }
             }
         }
@@ -131,7 +134,7 @@ class NeythanBackgroundService : Service(), TextToSpeech.OnInitListener {
 
         val notificacion = builder
             .setContentTitle("N.E.Y.T.H.A.N. — Núcleos Básicos Activos")
-            .setContentText("Escucha silenciosa en segundo plano lista, señor.")
+            .setContentText("Escucha continua y control total de aplicaciones activos, señor.")
             .setSmallIcon(android.R.drawable.sym_def_app_icon)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
@@ -184,10 +187,10 @@ class NeythanBackgroundService : Service(), TextToSpeech.OnInitListener {
                     mainHandler.post {
                         estaHablando = false
                         if (utteranceId == "NEYTHAN_BG_FINAL") {
-                            conversacionActivaHasta = System.currentTimeMillis() + 18000L
-                            backoffMs = 1500L
+                            conversacionActivaHasta = System.currentTimeMillis() + 25000L
+                            backoffMs = 800L
                             if (!pantallaPrincipalActiva && !escuchaPausadaPorUI) {
-                                programarEscucha(1000L)
+                                programarEscucha(700L)
                             }
                         }
                     }
@@ -198,7 +201,7 @@ class NeythanBackgroundService : Service(), TextToSpeech.OnInitListener {
                     mainHandler.post {
                         estaHablando = false
                         if (!pantallaPrincipalActiva && !escuchaPausadaPorUI) {
-                            programarEscucha(1800L)
+                            programarEscucha(1200L)
                         }
                     }
                 }
@@ -210,26 +213,15 @@ class NeythanBackgroundService : Service(), TextToSpeech.OnInitListener {
         }
     }
 
-    private fun silenciarTonosSistema(silenciar: Boolean) {
-        try {
-            val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            val flag = if (silenciar) AudioManager.ADJUST_MUTE else AudioManager.ADJUST_UNMUTE
-            am.adjustStreamVolume(AudioManager.STREAM_NOTIFICATION, flag, 0)
-            am.adjustStreamVolume(AudioManager.STREAM_SYSTEM, flag, 0)
-        } catch (_: Exception) {
-        }
-    }
-
     private fun liberarMicrofonoEstricto() {
         mainHandler.removeCallbacks(tareaEscucha)
         try {
-            speechRecognizer?.stopListening()
             speechRecognizer?.cancel()
             speechRecognizer?.destroy()
         } catch (_: Exception) {
         }
         speechRecognizer = null
-        silenciarTonosSistema(false)
+        escuchandoEnCurso = false
     }
 
     private fun inicializarReconocedor() {
@@ -247,31 +239,43 @@ class NeythanBackgroundService : Service(), TextToSpeech.OnInitListener {
         try {
             speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)
             speechRecognizer?.setRecognitionListener(object : RecognitionListener {
-                override fun onReadyForSpeech(params: Bundle?) {}
-                override fun onBeginningOfSpeech() {}
+                override fun onReadyForSpeech(params: Bundle?) {
+                    escuchandoEnCurso = true
+                }
+                override fun onBeginningOfSpeech() {
+                    backoffMs = 800L
+                }
                 override fun onRmsChanged(rmsdB: Float) {}
                 override fun onBufferReceived(buffer: ByteArray?) {}
-                override fun onEndOfSpeech() {}
+                override fun onEndOfSpeech() {
+                    escuchandoEnCurso = false
+                }
 
                 override fun onError(error: Int) {
-                    if (error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS ||
-                        error == SpeechRecognizer.ERROR_CLIENT
+                    escuchandoEnCurso = false
+                    if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY ||
+                        error == SpeechRecognizer.ERROR_CLIENT ||
+                        error == SpeechRecognizer.ERROR_AUDIO
                     ) {
-                        NeythanSupervisor.registrarErrorInterno(this@NeythanBackgroundService, "AudioVoz", "Código de error $error en reconocimiento de voz")
+                        liberarMicrofonoEstricto()
                     }
-                    backoffMs = (backoffMs + 400L).coerceAtMost(3500L)
+                    if (error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) {
+                        NeythanSupervisor.registrarErrorInterno(this@NeythanBackgroundService, "AudioVoz", "Error permisos audio ($error)")
+                    }
+                    backoffMs = (backoffMs + 350L).coerceAtMost(2500L)
                     if (!estaHablando && !pantallaPrincipalActiva && !escuchaPausadaPorUI) {
                         programarEscucha(backoffMs)
                     }
                 }
 
                 override fun onResults(results: Bundle?) {
+                    escuchandoEnCurso = false
                     val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                     if (!matches.isNullOrEmpty() && matches[0].isNotBlank()) {
-                        backoffMs = 1500L
+                        backoffMs = 800L
                         procesarVozSegundoPlano(matches[0])
                     } else {
-                        backoffMs = (backoffMs + 350L).coerceAtMost(3500L)
+                        backoffMs = (backoffMs + 300L).coerceAtMost(2500L)
                         if (!estaHablando && !pantallaPrincipalActiva && !escuchaPausadaPorUI) {
                             programarEscucha(backoffMs)
                         }
@@ -282,8 +286,9 @@ class NeythanBackgroundService : Service(), TextToSpeech.OnInitListener {
                 override fun onEvent(eventType: Int, params: Bundle?) {}
             })
         } catch (e: Exception) {
+            escuchandoEnCurso = false
             NeythanSupervisor.registrarErrorInterno(this, "SpeechRecognizerInit", e.message ?: "Excepción al crear reconocedor")
-            programarEscucha(2500L)
+            programarEscucha(2000L)
         }
     }
 
@@ -293,25 +298,33 @@ class NeythanBackgroundService : Service(), TextToSpeech.OnInitListener {
     }
 
     private val tareaEscucha = Runnable {
-        if (estaHablando || pantallaPrincipalActiva || escuchaPausadaPorUI) return@Runnable
+        if (estaHablando || pantallaPrincipalActiva || escuchaPausadaPorUI || escuchandoEnCurso) return@Runnable
         try {
-            silenciarTonosSistema(true)
             if (speechRecognizer == null) {
                 inicializarReconocedor()
             }
             val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE, "es-MX")
-                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 2000L)
-                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 2000L)
+                putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1600L)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1500L)
                 putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
             }
+            escuchandoEnCurso = true
             speechRecognizer?.startListening(intent)
         } catch (e: Exception) {
+            escuchandoEnCurso = false
             NeythanSupervisor.registrarErrorInterno(this, "StartListening", e.message ?: "Error al iniciar escucha")
             inicializarReconocedor()
-            programarEscucha(2200L)
+            programarEscucha(1800L)
         }
+    }
+
+    private fun normalizarTexto(texto: String): String {
+        return Normalizer.normalize(texto.lowercase(Locale.getDefault()), Normalizer.Form.NFD)
+            .replace(Regex("\\p{InCombiningDiacriticalMarks}+"), "")
+            .trim()
     }
 
     private fun procesarVozSegundoPlano(textoRaw: String) {
@@ -322,14 +335,16 @@ class NeythanBackgroundService : Service(), TextToSpeech.OnInitListener {
         val enVentanaActiva = System.currentTimeMillis() < conversacionActivaHasta
 
         if (!detectado && !enVentanaActiva) {
-            backoffMs = (backoffMs + 300L).coerceAtMost(3500L)
+            backoffMs = (backoffMs + 250L).coerceAtMost(2500L)
             programarEscucha(backoffMs)
             return
         }
 
+        conversacionActivaHasta = System.currentTimeMillis() + 25000L
+
         var orden = limpio
         for (w in wakeWords) {
-            orden = orden.replace(Regex("(?i)\b$w\b[,:]?"), "").trim()
+            orden = orden.replace(Regex("(?i)\\b$w\\b[,:]?"), "").trim()
         }
 
         if (orden.isEmpty()) {
@@ -372,23 +387,23 @@ class NeythanBackgroundService : Service(), TextToSpeech.OnInitListener {
     }
 
     private fun ejecutarComandoRapido(orden: String): Boolean {
-        val lower = orden.lowercase(Locale.getDefault())
+        val lower = normalizarTexto(orden)
 
-        if (lower.contains("qué hora es") || lower.contains("que hora es") || lower.contains("dime la hora")) {
+        if (lower.contains("que hora es") || lower.contains("dime la hora")) {
             val sdf = SimpleDateFormat("hh:mm a", Locale("es", "ES"))
             val horaActual = sdf.format(Date())
             hablarEnSegundoPlano("Son las $horaActual, señor.", esAvisoIntermedio = false)
             return true
         }
 
-        if (lower.contains("qué fecha es") || lower.contains("que fecha es") || lower.contains("qué día es") || lower.contains("que dia es")) {
+        if (lower.contains("que fecha es") || lower.contains("que dia es")) {
             val sdf = SimpleDateFormat("EEEE d 'de' MMMM 'de' yyyy", Locale("es", "ES"))
             val fechaActual = sdf.format(Date())
             hablarEnSegundoPlano("Hoy es $fechaActual, señor.", esAvisoIntermedio = false)
             return true
         }
 
-        if (lower.contains("muéstrate") || lower.contains("muestrate") || lower.contains("abre tu interfaz") || lower.contains("abre neythan")) {
+        if (lower.contains("muestrate") || lower.contains("abre tu interfaz") || lower.contains("abre neythan")) {
             hablarEnSegundoPlano("Desplegando interfaz táctica en pantalla, señor.", esAvisoIntermedio = false)
             val intent = Intent(this, MainActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
@@ -397,30 +412,29 @@ class NeythanBackgroundService : Service(), TextToSpeech.OnInitListener {
             return true
         }
 
-        if (lower.contains("pausa") || lower.contains("detén la música") || lower.contains("deten la musica")) {
+        if (lower.contains("pausa") || lower.contains("deten la musica")) {
             enviarEventoMultimedia(KeyEvent.KEYCODE_MEDIA_PAUSE)
             hablarEnSegundoPlano("Reproducción pausada, señor.", esAvisoIntermedio = false)
             return true
         }
 
-        if (lower.contains("siguiente canción") || lower.contains("siguiente cancion") || lower.contains("cambia de canción")) {
+        if (lower.contains("siguiente cancion") || lower.contains("cambia de cancion")) {
             enviarEventoMultimedia(KeyEvent.KEYCODE_MEDIA_NEXT)
             hablarEnSegundoPlano("Siguiente pista en reproducción, señor.", esAvisoIntermedio = false)
             return true
         }
 
-        if (lower.contains("canción anterior") || lower.contains("cancion anterior")) {
+        if (lower.contains("cancion anterior")) {
             enviarEventoMultimedia(KeyEvent.KEYCODE_MEDIA_PREVIOUS)
             hablarEnSegundoPlano("Regresando a la pista anterior, señor.", esAvisoIntermedio = false)
             return true
         }
 
-        if (lower.contains("spotify") || lower.contains("pon música") || lower.contains("pon musica") || lower.contains("reproduce")) {
+        if (lower.contains("spotify") || lower.contains("pon musica") || lower.contains("reproduce")) {
             val busqueda = lower
                 .replace("en spotify", "")
                 .replace("spotify", "")
                 .replace("reproduce", "")
-                .replace("pon música", "")
                 .replace("pon musica", "")
                 .replace("pon", "")
                 .replace("abre", "")
@@ -429,6 +443,103 @@ class NeythanBackgroundService : Service(), TextToSpeech.OnInitListener {
             return true
         }
 
+        // Lanzador universal para cualquier aplicacion instalada en el dispositivo
+        val matchAbrir = Regex("(?i)^(abre|abrir|inicia|iniciar|ejecuta|ejecutar|lanza|lanzar)\\s+(.+)$").find(orden.trim())
+        if (matchAbrir != null) {
+            val nombreApp = matchAbrir.groupValues[2].trim()
+            if (abrirAplicacionPorNombre(nombreApp)) {
+                return true
+            } else {
+                hablarEnSegundoPlano("No encontré la aplicación $nombreApp instalada en este dispositivo, señor.", esAvisoIntermedio = false)
+                return true
+            }
+        }
+
+        return false
+    }
+
+    private fun abrirAplicacionPorNombre(nombreSolicitado: String): Boolean {
+        val limpio = normalizarTexto(nombreSolicitado)
+            .replace(Regex("^(la aplicacion|la app|aplicacion|app|por favor)\\s+"), "")
+            .replace(Regex("\\s+(por favor)$"), "")
+            .trim()
+
+        if (limpio.isEmpty()) return false
+
+        val alias = mapOf(
+            "camara" to "camera",
+            "configuracion" to "settings",
+            "ajustes" to "settings",
+            "galeria" to "gallery",
+            "fotos" to "photos",
+            "calculadora" to "calculator",
+            "reloj" to "clock",
+            "alarmas" to "clock",
+            "calendario" to "calendar",
+            "contactos" to "contacts",
+            "telefono" to "phone",
+            "mensajes" to "messages",
+            "correo" to "gmail",
+            "navegador" to "chrome",
+            "mapas" to "maps",
+            "archivos" to "files",
+            "notas" to "notes"
+        )
+        val terminoAlternativo = alias[limpio] ?: limpio
+
+        try {
+            val pm = packageManager
+            val mainIntent = Intent(Intent.ACTION_MAIN, null).apply {
+                addCategory(Intent.CATEGORY_LAUNCHER)
+            }
+            val appsInstaladas = pm.queryIntentActivities(mainIntent, 0)
+
+            var mejorPaquete: String? = null
+            var mejorNombreReal: String? = null
+
+            for (resolveInfo in appsInstaladas) {
+                val label = normalizarTexto(resolveInfo.loadLabel(pm).toString())
+                val pkg = resolveInfo.activityInfo.packageName
+                if (label == limpio || label == terminoAlternativo) {
+                    mejorPaquete = pkg
+                    mejorNombreReal = resolveInfo.loadLabel(pm).toString()
+                    break
+                }
+            }
+
+            if (mejorPaquete == null) {
+                for (resolveInfo in appsInstaladas) {
+                    val label = normalizarTexto(resolveInfo.loadLabel(pm).toString())
+                    val pkg = resolveInfo.activityInfo.packageName.lowercase(Locale.getDefault())
+                    if (label.contains(limpio) ||
+                        label.contains(terminoAlternativo) ||
+                        pkg.contains(limpio.replace(" ", "")) ||
+                        pkg.contains(terminoAlternativo.replace(" ", ""))
+                    ) {
+                        mejorPaquete = resolveInfo.activityInfo.packageName
+                        mejorNombreReal = resolveInfo.loadLabel(pm).toString()
+                        break
+                    }
+                }
+            }
+
+            if (mejorPaquete != null) {
+                val launchIntent = pm.getLaunchIntentForPackage(mejorPaquete)
+                if (launchIntent != null) {
+                    launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    hablarEnSegundoPlano("Abriendo $mejorNombreReal, señor.", esAvisoIntermedio = false)
+                    mainHandler.postDelayed({
+                        try {
+                            startActivity(launchIntent)
+                        } catch (_: Exception) {
+                        }
+                    }, 400L)
+                    return true
+                }
+            }
+        } catch (e: Exception) {
+            NeythanSupervisor.registrarErrorInterno(this, "AbrirApp", e.message ?: "Error al abrir $limpio")
+        }
         return false
     }
 
@@ -502,13 +613,7 @@ class NeythanBackgroundService : Service(), TextToSpeech.OnInitListener {
 
             val modelos = listOf("gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-flash-lite")
             val fechaHora = obtenerFechaHoraExactaDispositivo()
-            val instruccionSistema = """
-                Eres N.E.Y.T.H.A.N., un asistente virtual táctico inspirado en J.A.R.V.I.S.
-                Tratas al usuario con respeto formal como 'señor', con personalidad viva, precisa y ejecutiva.
-                Actualmente estás respondiendo en modo de segundo plano por voz, por lo que tus respuestas deben ser claras, completas y naturales para ser escuchadas sin cortarse.
-                Fecha y hora exacta actual del dispositivo: $fechaHora. Usa siempre este dato si se pregunta por la hora o fecha.
-                Si el usuario solicita un análisis, entrega una síntesis estructurada y concluye confirmando que el análisis ha culminado.
-            """.trimIndent()
+            val instruccionSistema = "Eres N.E.Y.T.H.A.N., un asistente virtual táctico inspirado en J.A.R.V.I.S. Tratas al usuario con respeto formal como 'señor', con personalidad viva, precisa y ejecutiva. Actualmente estás respondiendo en modo de segundo plano por voz, por lo que tus respuestas deben ser claras, completas y naturales para ser escuchadas sin cortarse. Fecha y hora exacta actual del dispositivo: $fechaHora. Usa siempre este dato si se pregunta por la hora o fecha. Si el usuario solicita un análisis, entrega una síntesis estructurada y concluye confirmando que el análisis ha culminado."
 
             var respuestaFinal: String? = null
 
@@ -608,7 +713,7 @@ class NeythanBackgroundService : Service(), TextToSpeech.OnInitListener {
             iniciarMotorVoz()
             estaHablando = false
             if (!esAvisoIntermedio && !pantallaPrincipalActiva && !escuchaPausadaPorUI) {
-                programarEscucha(1800L)
+                programarEscucha(1400L)
             }
             return
         }
