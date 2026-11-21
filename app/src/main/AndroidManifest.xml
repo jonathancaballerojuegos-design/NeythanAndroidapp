@@ -2,21 +2,25 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.jonathan.neythan">
 
-    <!-- Permisos de red, micrófono y segundo plano continuo -->
+    <!-- Permisos de red y audio -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
-    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
-    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
 
-    <!-- Visibilidad de aplicaciones externas en Android 11+ (Spotify y motor de voz Google) -->
+    <!-- Permisos de segundo plano, energia y persistencia -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Permiso para burbuja flotante sobre otras aplicaciones -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <!-- Visibilidad de paquetes en Android 11+ (Spotify y motor de voz/TTS) -->
     <queries>
         <package android:name="com.spotify.music" />
         <package android:name="com.google.android.tts" />
@@ -25,23 +29,26 @@
             <action android:name="android.speech.RecognitionService" />
         </intent>
         <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+        <intent>
             <action android:name="android.media.action.MEDIA_PLAY_FROM_SEARCH" />
         </intent>
     </queries>
 
     <application
         android:allowBackup="true"
-        android:icon="@mipmap/ic_launcher"
-        android:label="Neythan"
-        android:roundIcon="@mipmap/ic_launcher_round"
+        android:icon="@android:drawable/sym_def_app_icon"
+        android:label="N.E.Y.T.H.A.N."
         android:supportsRtl="true"
-        android:theme="@android:style/Theme.Material.NoActionBar">
+        android:theme="@android:style/Theme.NoTitleBar.Fullscreen"
+        android:usesCleartextTraffic="true">
 
-        <!-- Actividad principal HUD Geodésico -->
+        <!-- Actividad principal HUD -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:launchMode="singleTop"
+            android:launchMode="singleTask"
             android:screenOrientation="portrait"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
@@ -50,7 +57,7 @@
             </intent-filter>
         </activity>
 
-        <!-- Servicio persistente de escucha en segundo plano -->
+        <!-- Servicio de escucha continua en segundo plano -->
         <service
             android:name=".NeythanBackgroundService"
             android:enabled="true"
@@ -58,13 +65,13 @@
             android:foregroundServiceType="microphone"
             android:stopWithTask="false" />
 
-        <!-- Burbuja flotante sobre otras aplicaciones -->
+        <!-- Servicio de burbuja flotante -->
         <service
             android:name=".FloatingService"
             android:enabled="true"
             android:exported="false" />
 
-        <!-- Receptor de arranque automático del dispositivo -->
+        <!-- Receptor de arranque automatico al encender el telefono -->
         <receiver
             android:name=".BootReceiver"
             android:enabled="true"
@@ -72,6 +79,7 @@
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
 
