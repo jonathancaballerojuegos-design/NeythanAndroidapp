@@ -8,9 +8,7 @@ import android.content.pm.PackageManager
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.DashPathEffect
-import android.graphics.LinearGradient
 import android.graphics.Paint
-import android.graphics.Path
 import android.graphics.RadialGradient
 import android.graphics.RectF
 import android.graphics.Shader
@@ -82,8 +80,12 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private var modoMotor = "GEMINI-FLASH"
     private var nivelVozUsuario = 0f
     private var estaHablando = false
+    private var escuchandoEnCurso = false
     private var escuchaActiva = true
     private var conversacionActivaHasta = 0L
+    private var backoffEscuchaMs = 1800L
+    private var volumenNotifPrevio = -1
+    private var volumenSysPrevio = -1
 
     // 2 Núcleos Básicos (siempre activos)
     private var nucleoBasico1Voz = true
@@ -116,6 +118,28 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         auditarCompilacionesGithubSilencioso()
     }
 
+    override fun onResume() {
+        super.onResume()
+        // Pausamos el servicio secundario para evitar doble micrófono y pitidos simultáneos
+        try {
+            stopService(Intent(this, NeythanBackgroundService::class.java))
+        } catch (_: Exception) {
+        }
+        if (escuchaActiva && !estaHablando) {
+            reanudarEscucha(1000L)
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        detenerEscuchaTemporal()
+        restaurarTonosSistema()
+        // Reactivamos el servicio de segundo plano solo al salir de la pantalla
+        if (escuchaActiva) {
+            iniciarServiciosPersistentes()
+        }
+    }
+
     private fun construirInterfazHud() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -123,7 +147,6 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             setPadding(dp(12), dp(10), dp(12), dp(10))
         }
 
-        // Lienzo HUD Geodésico 3D + 7 Núcleos + Espectrómetro
         hudView = NeythanGeodesicHudView(this)
         val paramsHud = LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
@@ -132,7 +155,6 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         )
         root.addView(hudView, paramsHud)
 
-        // Cabecera de Consola Neuronal
         val headerConsola = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -168,7 +190,6 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         headerConsola.addView(btnLimpiar)
         root.addView(headerConsola)
 
-        // Área desplazable de conversación
         scrollConsola = ScrollView(this).apply {
             setBackgroundColor(Color.parseColor("#070E1A"))
             setPadding(dp(12), dp(8), dp(12), dp(8))
@@ -188,7 +209,6 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         )
         root.addView(scrollConsola, paramsConsola)
 
-        // Barra inferior de entrada de texto y micrófono
         val barraEntrada = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -206,10 +226,12 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 if (escuchaActiva) {
                     setTextColor(Color.parseColor("#00F0FF"))
                     estadoActual = "ESCUCHANDO"
-                    reanudarEscucha(300L)
+                    backoffEscuchaMs = 1500L
+                    reanudarEscucha(400L)
                 } else {
                     setTextColor(Color.parseColor("#FF5252"))
                     detenerEscuchaTemporal()
+                    restaurarTonosSistema()
                     estadoActual = "PAUSADO"
                 }
             }
@@ -301,6 +323,36 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         }, duracionMs)
     }
 
+    private fun silenciarTonosSistema() {
+        try {
+            val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            if (volumenNotifPrevio == -1) {
+                volumenNotifPrevio = am.getStreamVolume(AudioManager.STREAM_NOTIFICATION)
+            }
+            if (volumenSysPrevio == -1) {
+                volumenSysPrevio = am.getStreamVolume(AudioManager.STREAM_SYSTEM)
+            }
+            am.setStreamVolume(AudioManager.STREAM_NOTIFICATION, 0, 0)
+            am.setStreamVolume(AudioManager.STREAM_SYSTEM, 0, 0)
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun restaurarTonosSistema() {
+        try {
+            val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            if (volumenNotifPrevio >= 0) {
+                am.setStreamVolume(AudioManager.STREAM_NOTIFICATION, volumenNotifPrevio, 0)
+                volumenNotifPrevio = -1
+            }
+            if (volumenSysPrevio >= 0) {
+                am.setStreamVolume(AudioManager.STREAM_SYSTEM, volumenSysPrevio, 0)
+                volumenSysPrevio = -1
+            }
+        } catch (_: Exception) {
+        }
+    }
+
     private fun iniciarMotorVoz() {
         try {
             tts = TextToSpeech(this, this, "com.google.android.tts")
@@ -321,6 +373,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 override fun onStart(utteranceId: String?) {
                     mainHandler.post {
                         estaHablando = true
+                        detenerEscuchaTemporal()
                         estadoActual = "HABLANDO"
                     }
                 }
@@ -329,8 +382,10 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                     mainHandler.post {
                         estaHablando = false
                         estadoActual = if (escuchaActiva) "ESCUCHANDO" else "PAUSADO"
-                        conversacionActivaHasta = System.currentTimeMillis() + 20000L
-                        if (escuchaActiva) reanudarEscucha(900L)
+                        conversacionActivaHasta = System.currentTimeMillis() + 22000L
+                        backoffEscuchaMs = 1500L
+                        // Pausa de 1.3s tras hablar para evitar captar eco residual
+                        if (escuchaActiva) reanudarEscucha(1300L)
                     }
                 }
 
@@ -339,7 +394,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                     mainHandler.post {
                         estaHablando = false
                         estadoActual = if (escuchaActiva) "ESCUCHANDO" else "PAUSADO"
-                        if (escuchaActiva) reanudarEscucha(1200L)
+                        if (escuchaActiva) reanudarEscucha(1500L)
                     }
                 }
             })
@@ -348,7 +403,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             hablar(saludoInicial)
         } else {
             agregarMensajeConsola("N.E.Y.T.H.A.N.", "Núcleos en línea, señor. Motor de voz en modo texto.")
-            reanudarEscucha(1200L)
+            reanudarEscucha(1500L)
         }
     }
 
@@ -386,9 +441,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 return
             }
         }
-        iniciarServiciosPersistentes()
         solicitarExencionBateria()
-        reanudarEscucha(1200L)
+        reanudarEscucha(1500L)
     }
 
     override fun onRequestPermissionsResult(
@@ -399,9 +453,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         val concedido = grantResults.any { it == PackageManager.PERMISSION_GRANTED }
         if (requestCode == REQ_PERMISOS && concedido) {
-            iniciarServiciosPersistentes()
             solicitarExencionBateria()
-            reanudarEscucha(800L)
+            reanudarEscucha(1000L)
         } else {
             agregarMensajeConsola("N.E.Y.T.H.A.N.", "Permiso de micrófono requerido para la escucha continua, señor.")
         }
@@ -442,36 +495,46 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)
             speechRecognizer?.setRecognitionListener(object : RecognitionListener {
                 override fun onReadyForSpeech(params: Bundle?) {
+                    escuchandoEnCurso = true
                     if (!estaHablando && escuchaActiva) {
                         estadoActual = "ESCUCHANDO"
                     }
                 }
 
-                override fun onBeginningOfSpeech() {}
+                override fun onBeginningOfSpeech() {
+                    backoffEscuchaMs = 1500L
+                }
 
                 override fun onRmsChanged(rmsdB: Float) {
                     nivelVozUsuario = rmsdB.coerceIn(0f, 12f)
                 }
 
                 override fun onBufferReceived(buffer: ByteArray?) {}
+
                 override fun onEndOfSpeech() {
                     nivelVozUsuario = 0f
+                    escuchandoEnCurso = false
                 }
 
                 override fun onError(error: Int) {
                     nivelVozUsuario = 0f
+                    escuchandoEnCurso = false
                     if (!estaHablando && escuchaActiva) {
-                        reanudarEscucha(1500L)
+                        // Evita el bucle rápido de pitidos cuando hay silencio
+                        backoffEscuchaMs = (backoffEscuchaMs + 600L).coerceAtMost(3500L)
+                        reanudarEscucha(backoffEscuchaMs)
                     }
                 }
 
                 override fun onResults(results: Bundle?) {
                     nivelVozUsuario = 0f
+                    escuchandoEnCurso = false
+                    backoffEscuchaMs = 1500L
                     val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                     if (!matches.isNullOrEmpty()) {
                         procesarTextoCapturado(matches[0])
-                    } else if (escuchaActiva) {
-                        reanudarEscucha(1100L)
+                    } else if (escuchaActiva && !estaHablando) {
+                        reanudarEscucha(1500L)
                     }
                 }
 
@@ -479,19 +542,21 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 override fun onEvent(eventType: Int, params: Bundle?) {}
             })
         } catch (_: Exception) {
-            if (escuchaActiva) reanudarEscucha(2000L)
+            escuchandoEnCurso = false
+            if (escuchaActiva) reanudarEscucha(2500L)
         }
     }
 
     private fun reanudarEscucha(retrasoMs: Long) {
         mainHandler.removeCallbacks(tareaEscucha)
-        if (!escuchaActiva) return
+        if (!escuchaActiva || estaHablando) return
         mainHandler.postDelayed(tareaEscucha, retrasoMs)
     }
 
     private val tareaEscucha = Runnable {
-        if (estaHablando || !escuchaActiva) return@Runnable
+        if (estaHablando || !escuchaActiva || escuchandoEnCurso) return@Runnable
         try {
+            silenciarTonosSistema()
             if (speechRecognizer == null) {
                 configurarReconocedor()
             }
@@ -499,16 +564,22 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE, "es-MX")
                 putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 2200L)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1800L)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 1200L)
             }
+            escuchandoEnCurso = true
             speechRecognizer?.startListening(intent)
         } catch (_: Exception) {
+            escuchandoEnCurso = false
             configurarReconocedor()
-            reanudarEscucha(1800L)
+            reanudarEscucha(2200L)
         }
     }
 
     private fun detenerEscuchaTemporal() {
         mainHandler.removeCallbacks(tareaEscucha)
+        escuchandoEnCurso = false
         try {
             speechRecognizer?.stopListening()
             speechRecognizer?.cancel()
@@ -524,7 +595,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         val enVentanaActiva = System.currentTimeMillis() < conversacionActivaHasta
 
         if (!contieneWakeWord && !enVentanaActiva) {
-            if (escuchaActiva) reanudarEscucha(1100L)
+            if (escuchaActiva) reanudarEscucha(1500L)
             return
         }
 
@@ -542,11 +613,11 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     }
 
     private fun procesarOrdenDirecta(orden: String) {
+        detenerEscuchaTemporal()
         agregarMensajeConsola("Tú", orden)
         estadoActual = "PROCESANDO"
         val lower = orden.lowercase(Locale.getDefault())
 
-        // Gestión de permiso pendiente del núcleo supervisor
         if (esperandoPermisoReporte && falloPendienteDetalle != null) {
             if (lower.contains("sí") || lower.contains("si") || lower.contains("autorizo") ||
                 lower.contains("adelante") || lower.contains("dime") || lower.contains("revisa")
@@ -575,7 +646,6 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private fun ejecutarComandoLocalSiAplica(orden: String): Boolean {
         val lower = orden.lowercase(Locale.getDefault())
 
-        // Hora y fecha exacta del dispositivo
         if (lower.contains("qué hora") || lower.contains("que hora") || lower.contains("dime la hora") || lower == "hora") {
             activarNucleoTactico(4, 3000L)
             val horaFmt = SimpleDateFormat("hh:mm a", Locale("es", "MX")).format(Date())
@@ -590,7 +660,6 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             return true
         }
 
-        // Control multimedia: pausa / siguiente / anterior
         if (lower.contains("pausa") || lower.contains("detén la música") || lower.contains("deten la musica")) {
             activarNucleoTactico(3, 3500L)
             enviarEventoMultimedia(KeyEvent.KEYCODE_MEDIA_PAUSE)
@@ -612,7 +681,6 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             return true
         }
 
-        // Reproducción automática en Spotify
         if (lower.contains("spotify") || lower.contains("pon música") || lower.contains("pon musica") ||
             lower.contains("reproduce") || lower.contains("pon ")
         ) {
@@ -632,7 +700,6 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             return true
         }
 
-        // Estado de los 7 núcleos
         if (lower.contains("estado de núcleos") || lower.contains("estado de nucleos") || lower.contains("diagnóstico")) {
             activarNucleoTactico(5, 5000L)
             hablar("Los dos núcleos básicos de voz y memoria operan al cien por ciento. Los cinco núcleos tácticos se encuentran en guardia listos para despliegue, señor.")
@@ -760,10 +827,11 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
                 val horaActual = obtenerFechaHoraExactaDispositivo()
                 val instruccionSistema = """
-                    Eres NEYTHAN, un asistente táctico inteligente inspirado en J.A.R.V.I.S.
+                    Eres NEYTHAN, un asistente táctico inteligente integrado de forma nativa en el teléfono Android del usuario, inspirado en J.A.R.V.I.S.
                     Tratas al usuario con respeto como "señor".
+                    Conciencia propia: sabes que eres esta aplicación Android con interfaz HUD geodésica 3D, 2 núcleos básicos (Voz/Sensor y Memoria) y 5 núcleos tácticos (Cognitivo, Visión, Ejecución, Proactivo y Supervisor). Si el señor reporta un fallo de audio, micrófono o interfaz, analiza tus propios módulos Android.
                     Fecha y hora real exacta del dispositivo: $horaActual. Nunca inventes una hora distinta.
-                    Responde en español de forma clara, completa, natural y concisa (máximo 3 oraciones bien terminadas, sin dejar frases inconclusas).
+                    Responde en español de forma clara, completa, natural y concisa (máximo 3 oraciones bien terminadas).
                 """.trimIndent()
 
                 val contentsArray = JSONArray()
@@ -890,6 +958,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     private fun hablar(texto: String) {
         detenerEscuchaTemporal()
+        estaHablando = true
         agregarMensajeConsola("N.E.Y.T.H.A.N.", texto)
         estadoActual = "HABLANDO"
         solicitarFocoAudioMultimedia()
@@ -902,7 +971,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         } else {
             estaHablando = false
             estadoActual = if (escuchaActiva) "ESCUCHANDO" else "PAUSADO"
-            if (escuchaActiva) reanudarEscucha(1200L)
+            if (escuchaActiva) reanudarEscucha(1500L)
         }
     }
 
@@ -943,6 +1012,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     override fun onDestroy() {
         detenerEscuchaTemporal()
+        restaurarTonosSistema()
         try {
             speechRecognizer?.destroy()
             tts?.stop()
@@ -1019,7 +1089,6 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 else -> Color.parseColor("#00E5FF")
             }
 
-            // Fondo radial profundo
             paintFondo.shader = RadialGradient(
                 w / 2f, h * 0.48f, w.coerceAtLeast(h) * 0.7f,
                 intArrayOf(Color.parseColor("#0D223A"), Color.parseColor("#050B14"), Color.parseColor("#03060C")),
@@ -1028,24 +1097,18 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             )
             canvas.drawRect(0f, 0f, w, h, paintFondo)
 
-            // Marco técnico y esquinas
             paintLinea.color = colorPrincipal
             paintLinea.alpha = 90
             canvas.drawRect(4f, 4f, w - 4f, h - 4f, paintLinea)
 
-            // Barra superior: 2 Núcleos Básicos
             dibujarPanelNucleosBasicos(canvas, w, colorPrincipal)
+            dibujarPanelNucleosTacticos(canvas)
 
-            // Matriz lateral/superior: 5 Núcleos Tácticos
-            dibujarPanelNucleosTacticos(canvas, w, h)
-
-            // Núcleo Geodésico 3D Central
             val cx = w / 2f
             val cy = h * 0.49f
             val pulso = if (estaHablando) (sin(tiempo * 14.0) * 10.0).toFloat() else (nivelVozUsuario * 2.5f)
             val radioEsfera = (w.coerceAtMost(h) * 0.24f) + pulso
 
-            // Anillos orbitales
             paintAnilloDash.color = colorPrincipal
             paintAnilloDash.alpha = 150
             canvas.save()
@@ -1057,7 +1120,6 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             paintLinea.alpha = 70
             canvas.drawCircle(cx, cy, radioEsfera * 1.42f, paintLinea)
 
-            // Proyección 3D del icosaedro geodésico
             val velRot = if (estadoActual == "PROCESANDO") 1.8 else 0.65
             val angY = tiempo * velRot
             val angX = tiempo * (velRot * 0.55)
@@ -1096,14 +1158,12 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 canvas.drawCircle(p[0], p[1], 4.2f, paintNodo)
             }
 
-            // Etiqueta central NEYTHAN
             paintTexto.color = Color.WHITE
             paintTexto.textAlign = Paint.Align.CENTER
             paintTexto.textSize = 30f
             paintTexto.isFakeBoldText = true
             canvas.drawText("N E Y T H A N", cx, cy + 10f, paintTexto)
 
-            // Espectrómetro de frecuencia inferior
             dibujarEspectrometroYTelemetria(canvas, w, h, tiempo, colorPrincipal)
         }
 
@@ -1129,7 +1189,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             canvas.drawText("● $estadoActual", w - 20f, 37f, paintTexto)
         }
 
-        private fun dibujarPanelNucleosTacticos(canvas: Canvas, w: Float, h: Float) {
+        private fun dibujarPanelNucleosTacticos(canvas: Canvas) {
             val tacticos = listOf(
                 Triple("T1:COGNITIVO", nucleoTactico1Cognitivo, "#FFB300"),
                 Triple("T2:VISIÓN", nucleoTactico2Vision, "#E040FB"),
@@ -1181,7 +1241,6 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 canvas.drawRoundRect(rect, 3f, 3f, paintBarraSpec)
             }
 
-            // Línea de telemetría inferior
             val runtime = Runtime.getRuntime()
             val ramUsadaMb = (runtime.totalMemory() - runtime.freeMemory()) / (1024 * 1024)
             val hz = if (estaHablando) "480 HZ" else if (nivelVozUsuario > 0.5f) "220 HZ" else "60 HZ"
