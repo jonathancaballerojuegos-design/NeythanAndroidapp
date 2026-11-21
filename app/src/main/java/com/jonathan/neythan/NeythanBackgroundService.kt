@@ -45,7 +45,7 @@ class NeythanBackgroundService : Service(), TextToSpeech.OnInitListener {
         const val NOTIF_ID = 7001
         const val ACTION_PAUSAR_ESCUCHA = "com.jonathan.neythan.PAUSAR_ESCUCHA"
         const val ACTION_REANUDAR_ESCUCHA = "com.jonathan.neythan.REANUDAR_ESCUCHA"
-        const val GITHUB_OWNER = "jonathan" // Reemplazar con su usuario exacto de GitHub
+        const val GITHUB_OWNER = "jonathancaballerojuegos-design" // Reemplazar con su usuario exacto de GitHub
         @Volatile
         var pantallaPrincipalActiva: Boolean = false
     }
