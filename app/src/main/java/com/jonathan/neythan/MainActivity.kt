@@ -2,9 +2,6 @@ package com.jonathan.neythan
 
 import android.Manifest
 import android.app.Activity
-import android.app.ActivityManager
-import android.app.SearchManager
-import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -18,7 +15,6 @@ import android.graphics.RadialGradient
 import android.graphics.RectF
 import android.graphics.Shader
 import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
@@ -28,26 +24,21 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
-import android.provider.MediaStore
 import android.provider.Settings
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
-import android.text.SpannableStringBuilder
-import android.text.Spanned
-import android.text.style.ForegroundColorSpan
-import android.text.style.StyleSpan
+import android.text.InputType
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
-import android.view.ViewGroup
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
+import android.widget.Button
 import android.widget.EditText
-import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -59,9 +50,9 @@ import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
 import java.text.SimpleDateFormat
-import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import java.util.TimeZone
 import kotlin.concurrent.thread
 import kotlin.math.cos
 import kotlin.math.sin
@@ -71,19 +62,16 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     companion object {
         const val SERVER_URL = ""
-        const val GEMINI_API_KEY = BuildConfig.GEMINI_API_KEY
+        const val GITHUB_REPO = "jonathancaballerojuegos-design/NeythanAndroidapp"
         private const val REQ_PERMISOS = 1001
-        private const val PREFS_NAME = "neythan_core_prefs"
-        private const val KEY_ULTIMO_SALUDO = "ultimo_saludo_idx"
-        private const val KEY_ULTIMO_RUN_FAIL = "ultimo_run_fail_id"
-        private const val GITHUB_REPO = "jonathancaballerojuegos-design/NeythanAndroidapp"
+        private const val PREFS_NAME = "neythan_prefs"
     }
 
-    private lateinit var hudView: GeodesicHudView
-    private lateinit var tvConsola: TextView
+    private lateinit var hudView: NeythanGeodesicHudView
+    private lateinit var txtConsola: TextView
     private lateinit var scrollConsola: ScrollView
-    private lateinit var etComando: EditText
-    private lateinit var btnMic: TextView
+    private lateinit var inputComando: EditText
+    private lateinit var btnMicrofono: Button
 
     private var speechRecognizer: SpeechRecognizer? = null
     private var tts: TextToSpeech? = null
@@ -91,197 +79,159 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private var estadoActual = "ESCUCHANDO"
+    private var modoMotor = "GEMINI-FLASH"
     private var nivelVozUsuario = 0f
     private var estaHablando = false
+    private var escuchaActiva = true
     private var conversacionActivaHasta = 0L
-    private var enPrimerPlano = true
 
-    private var modeloGeminiActivo: String? = null
-    private val historialTurnos = ArrayList<Pair<String, String>>()
-    private val consolaBuffer = SpannableStringBuilder()
-
-    // Telemetría en tiempo real
-    private var fpsActual = 50
-    private var framesContador = 0
-    private var ultimoTiempoFps = System.currentTimeMillis()
-    private var hzActual = 100
-    private var ramPorcentaje = 32
-
-    // 2 Núcleos Básicos y 5 Núcleos Tácticos
+    // 2 Núcleos Básicos (siempre activos)
     private var nucleoBasico1Voz = true
     private var nucleoBasico2Memoria = true
 
+    // 5 Núcleos Tácticos (se iluminan bajo demanda)
     private var nucleoTactico1Cognitivo = false
     private var nucleoTactico2Vision = false
     private var nucleoTactico3Ejecucion = false
     private var nucleoTactico4Proactivo = false
     private var nucleoTactico5Supervisor = false
 
-    // Protocolo de autorización para reporte de fallos
-    private var falloPendienteResumen = ""
-    private var falloPendienteDetalle = ""
-    private var esperandoPermisoFallo = false
+    private var modeloGeminiDetectado: String? = null
+    private val historialTurnos = ArrayList<Pair<String, String>>()
+    private val consolaBuffer = StringBuilder()
+
+    private var falloPendienteDetalle: String? = null
+    private var esperandoPermisoReporte = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        window.statusBarColor = Color.parseColor("#03070D")
-        window.navigationBarColor = Color.parseColor("#03070D")
+        window.statusBarColor = Color.parseColor("#040810")
+        window.navigationBarColor = Color.parseColor("#040810")
 
-        construirInterfazGeodesica()
+        construirInterfazHud()
         iniciarMotorVoz()
         verificarPermisosYArrancar()
         iniciarBucleAnimacion()
-        auditarEstadoGitHubDiscreto()
+        auditarCompilacionesGithubSilencioso()
     }
 
-    private fun construirInterfazGeodesica() {
+    private fun construirInterfazHud() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.parseColor("#03070D"))
-            layoutParams = ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            )
+            setBackgroundColor(Color.parseColor("#040810"))
+            setPadding(dp(12), dp(10), dp(12), dp(10))
         }
 
-        // 1. Lienzo superior HUD Geodésico 3D + 7 Núcleos + Espectrómetro
-        hudView = GeodesicHudView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                0,
-                0.56f
-            )
-        }
-        root.addView(hudView)
+        // Lienzo HUD Geodésico 3D + 7 Núcleos + Espectrómetro
+        hudView = NeythanGeodesicHudView(this)
+        val paramsHud = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            0,
+            1.35f
+        )
+        root.addView(hudView, paramsHud)
 
-        // 2. Panel inferior Consola Neuronal
-        val panelConsola = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                0,
-                0.44f
-            ).apply {
-                val m = dp(10)
-                setMargins(m, dp(4), m, dp(10))
-            }
-            background = GradientDrawable().apply {
-                setColor(Color.parseColor("#06101B"))
-                setStroke(dp(1), Color.parseColor("#0D3B56"))
-                cornerRadius = dp(8).toFloat()
-            }
-            setPadding(dp(10), dp(8), dp(10), dp(8))
-        }
-
-        // Encabezado de consola
+        // Cabecera de Consola Neuronal
         val headerConsola = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            )
+            setBackgroundColor(Color.parseColor("#0A1322"))
+            setPadding(dp(12), dp(6), dp(12), dp(6))
         }
 
-        val tvTituloConsola = TextView(this).apply {
+        val lblTituloConsola = TextView(this).apply {
             text = "CONSOLA NEURONAL DE INTERACCIÓN"
-            setTextColor(Color.parseColor("#00D8FF"))
+            setTextColor(Color.parseColor("#4CE8FF"))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
             typeface = Typeface.MONOSPACE
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
 
-        val btnLimpiar = TextView(this).apply {
+        val btnLimpiar = Button(this).apply {
             text = "LIMPIAR ✕"
-            setTextColor(Color.parseColor("#00D8FF"))
+            setTextColor(Color.parseColor("#7FA8C9"))
+            setBackgroundColor(Color.parseColor("#102038"))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
             typeface = Typeface.MONOSPACE
-            setPadding(dp(8), dp(3), dp(8), dp(3))
-            background = GradientDrawable().apply {
-                setColor(Color.parseColor("#091E30"))
-                setStroke(dp(1), Color.parseColor("#0E4A6B"))
-                cornerRadius = dp(4).toFloat()
-            }
+            setPadding(dp(10), dp(2), dp(10), dp(2))
+            minimumHeight = 0
+            minHeight = 0
             setOnClickListener {
                 consolaBuffer.clear()
-                tvConsola.text = ""
-                agregarMensajeConsola("N.E.Y.T.H.A.N.", "Memoria visual despejada, señor. Núcleos en línea.", "#00E676")
+                txtConsola.text = ""
+                agregarMensajeConsola("N.E.Y.T.H.A.N.", "Consola despejada, señor. Núcleos listos.")
             }
         }
 
-        headerConsola.addView(tvTituloConsola)
+        headerConsola.addView(lblTituloConsola)
         headerConsola.addView(btnLimpiar)
-        panelConsola.addView(headerConsola)
+        root.addView(headerConsola)
 
-        // Línea divisoria
-        val divisor = View(this).apply {
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(1)
-            ).apply {
-                setMargins(0, dp(6), 0, dp(6))
-            }
-            setBackgroundColor(Color.parseColor("#0D3B56"))
-        }
-        panelConsola.addView(divisor)
-
-        // Área desplazable de logs
+        // Área desplazable de conversación
         scrollConsola = ScrollView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                0,
-                1f
-            )
+            setBackgroundColor(Color.parseColor("#070E1A"))
+            setPadding(dp(12), dp(8), dp(12), dp(8))
         }
-
-        tvConsola = TextView(this).apply {
+        txtConsola = TextView(this).apply {
             setTextColor(Color.parseColor("#D8F3FF"))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
             typeface = Typeface.MONOSPACE
-            setLineSpacing(dp(3).toFloat(), 1.0f)
+            setLineSpacing(4f, 1.15f)
         }
-        scrollConsola.addView(tvConsola)
-        panelConsola.addView(scrollConsola)
+        scrollConsola.addView(txtConsola)
 
-        // Barra inferior de entrada manual + botón micrófono
+        val paramsConsola = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            0,
+            0.85f
+        )
+        root.addView(scrollConsola, paramsConsola)
+
+        // Barra inferior de entrada de texto y micrófono
         val barraEntrada = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply {
-                topMargin = dp(6)
+            setBackgroundColor(Color.parseColor("#0A1322"))
+            setPadding(dp(8), dp(6), dp(8), dp(6))
+        }
+
+        btnMicrofono = Button(this).apply {
+            text = "🎙"
+            setTextColor(Color.parseColor("#00F0FF"))
+            setBackgroundColor(Color.parseColor("#112640"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+            setOnClickListener {
+                escuchaActiva = !escuchaActiva
+                if (escuchaActiva) {
+                    setTextColor(Color.parseColor("#00F0FF"))
+                    estadoActual = "ESCUCHANDO"
+                    reanudarEscucha(300L)
+                } else {
+                    setTextColor(Color.parseColor("#FF5252"))
+                    detenerEscuchaTemporal()
+                    estadoActual = "PAUSADO"
+                }
             }
         }
 
-        etComando = EditText(this).apply {
+        inputComando = EditText(this).apply {
             hint = "Escriba una orden para Neythan..."
-            setHintTextColor(Color.parseColor("#4D7A96"))
+            setHintTextColor(Color.parseColor("#4A6B88"))
             setTextColor(Color.WHITE)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
+            setBackgroundColor(Color.parseColor("#0E1B2E"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
             typeface = Typeface.MONOSPACE
-            singleLine = true
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+            isSingleLine = true
+            inputType = InputType.TYPE_CLASS_TEXT
             imeOptions = EditorInfo.IME_ACTION_SEND
-            setPadding(dp(10), dp(7), dp(10), dp(7))
-            background = GradientDrawable().apply {
-                setColor(Color.parseColor("#040B14"))
-                setStroke(dp(1), Color.parseColor("#114B6E"))
-                cornerRadius = dp(6).toFloat()
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                setMargins(dp(8), 0, dp(8), 0)
             }
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                rightMargin = dp(6)
-            }
-            setOnEditorActionListener { _, actionId, event ->
-                if (actionId == EditorInfo.IME_ACTION_SEND ||
-                    (event != null && event.keyCode == KeyEvent.KEYCODE_ENTER && event.action == KeyEvent.ACTION_DOWN)
-                ) {
-                    val cmd = text.toString().trim()
-                    if (cmd.isNotEmpty()) {
-                        setText("")
-                        procesarOrdenDirecta(cmd)
-                    }
+            setOnEditorActionListener { _, actionId, _ ->
+                if (actionId == EditorInfo.IME_ACTION_SEND) {
+                    enviarTextoDesdeCaja()
                     true
                 } else {
                     false
@@ -289,86 +239,66 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             }
         }
 
-        val btnEnviar = TextView(this).apply {
+        val btnEnviar = Button(this).apply {
             text = "➤"
-            setTextColor(Color.parseColor("#00E5FF"))
+            setTextColor(Color.parseColor("#040810"))
+            setBackgroundColor(Color.parseColor("#00E5FF"))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
-            gravity = Gravity.CENTER
-            setPadding(dp(11), dp(6), dp(11), dp(6))
-            background = GradientDrawable().apply {
-                setColor(Color.parseColor("#0A253B"))
-                setStroke(dp(1), Color.parseColor("#00A8FF"))
-                cornerRadius = dp(6).toFloat()
-            }
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply {
-                rightMargin = dp(6)
-            }
-            setOnClickListener {
-                val cmd = etComando.text.toString().trim()
-                if (cmd.isNotEmpty()) {
-                    etComando.setText("")
-                    procesarOrdenDirecta(cmd)
-                }
-            }
+            setOnClickListener { enviarTextoDesdeCaja() }
         }
 
-        btnMic = TextView(this).apply {
-            text = "🎙"
-            setTextColor(Color.parseColor("#00E676"))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
-            gravity = Gravity.CENTER
-            setPadding(dp(10), dp(6), dp(10), dp(6))
-            background = GradientDrawable().apply {
-                setColor(Color.parseColor("#0A253B"))
-                setStroke(dp(1), Color.parseColor("#00E676"))
-                cornerRadius = dp(6).toFloat()
-            }
-            setOnClickListener {
-                conversacionActivaHasta = System.currentTimeMillis() + 25000L
-                estadoActual = "ESCUCHANDO"
-                reanudarEscucha(150L)
-                agregarMensajeConsola("SISTEMA", "Canal de voz activado manualmente.", "#00D8FF")
-            }
-        }
-
-        barraEntrada.addView(etComando)
+        barraEntrada.addView(btnMicrofono)
+        barraEntrada.addView(inputComando)
         barraEntrada.addView(btnEnviar)
-        barraEntrada.addView(btnMic)
-        panelConsola.addView(barraEntrada)
+        root.addView(barraEntrada)
 
-        root.addView(panelConsola)
         setContentView(root)
     }
 
-    private fun agregarMensajeConsola(autor: String, mensaje: String, colorHex: String) {
+    private fun enviarTextoDesdeCaja() {
+        val texto = inputComando.text.toString().trim()
+        if (texto.isNotEmpty()) {
+            inputComando.setText("")
+            conversacionActivaHasta = System.currentTimeMillis() + 25000L
+            procesarOrdenDirecta(texto)
+        }
+    }
+
+    private fun agregarMensajeConsola(emisor: String, mensaje: String) {
         mainHandler.post {
-            if (consolaBuffer.isNotEmpty()) {
-                consolaBuffer.append("\n")
+            if (consolaBuffer.length > 4000) {
+                consolaBuffer.delete(0, 1500)
             }
-            val inicioAutor = consolaBuffer.length
-            consolaBuffer.append("$autor: ")
-            val finAutor = consolaBuffer.length
-            consolaBuffer.setSpan(
-                ForegroundColorSpan(Color.parseColor(colorHex)),
-                inicioAutor,
-                finAutor,
-                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
-            )
-            consolaBuffer.setSpan(
-                StyleSpan(Typeface.BOLD),
-                inicioAutor,
-                finAutor,
-                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
-            )
-            consolaBuffer.append(mensaje)
-            tvConsola.text = consolaBuffer
+            if (consolaBuffer.isNotEmpty()) {
+                consolaBuffer.append("\n\n")
+            }
+            consolaBuffer.append("[$emisor]: $mensaje")
+            txtConsola.text = consolaBuffer.toString()
             scrollConsola.post {
                 scrollConsola.fullScroll(View.FOCUS_DOWN)
             }
         }
+    }
+
+    private fun activarNucleoTactico(indice: Int, duracionMs: Long = 4500L) {
+        mainHandler.post {
+            when (indice) {
+                1 -> nucleoTactico1Cognitivo = true
+                2 -> nucleoTactico2Vision = true
+                3 -> nucleoTactico3Ejecucion = true
+                4 -> nucleoTactico4Proactivo = true
+                5 -> nucleoTactico5Supervisor = true
+            }
+        }
+        mainHandler.postDelayed({
+            when (indice) {
+                1 -> nucleoTactico1Cognitivo = false
+                2 -> nucleoTactico2Vision = false
+                3 -> nucleoTactico3Ejecucion = false
+                4 -> nucleoTactico4Proactivo = false
+                5 -> nucleoTactico5Supervisor = false
+            }
+        }, duracionMs)
     }
 
     private fun iniciarMotorVoz() {
@@ -398,12 +328,9 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 override fun onDone(utteranceId: String?) {
                     mainHandler.post {
                         estaHablando = false
-                        estadoActual = "ESCUCHANDO"
-                        desactivarNucleosTacticos()
+                        estadoActual = if (escuchaActiva) "ESCUCHANDO" else "PAUSADO"
                         conversacionActivaHasta = System.currentTimeMillis() + 20000L
-                        if (enPrimerPlano) {
-                            reanudarEscucha(900L)
-                        }
+                        if (escuchaActiva) reanudarEscucha(900L)
                     }
                 }
 
@@ -411,11 +338,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 override fun onError(utteranceId: String?) {
                     mainHandler.post {
                         estaHablando = false
-                        estadoActual = "ESCUCHANDO"
-                        desactivarNucleosTacticos()
-                        if (enPrimerPlano) {
-                            reanudarEscucha(1200L)
-                        }
+                        estadoActual = if (escuchaActiva) "ESCUCHANDO" else "PAUSADO"
+                        if (escuchaActiva) reanudarEscucha(1200L)
                     }
                 }
             })
@@ -423,57 +347,46 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             val saludoInicial = generarSaludoConConciencia()
             hablar(saludoInicial)
         } else {
-            agregarMensajeConsola("N.E.Y.T.H.A.N.", generarSaludoConConciencia(), "#00E676")
+            agregarMensajeConsola("N.E.Y.T.H.A.N.", "Núcleos en línea, señor. Motor de voz en modo texto.")
             reanudarEscucha(1200L)
         }
     }
 
     private fun generarSaludoConConciencia(): String {
-        val hora = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
-        val saludos = when {
-            hora in 5..11 -> listOf(
-                "Buenos días, señor. Los dos núcleos básicos y cinco tácticos están sincronizados. ¿Cuál es nuestra primera prioridad?",
-                "Buen día, señor. Todos los sistemas de telemetría y voz operan al cien por ciento. ¿En qué trabajamos hoy?",
-                "Saludos matutinos, señor. Núcleo geodésico estabilizado y enlace neuronal listo. A sus órdenes."
-            )
-            hora in 12..18 -> listOf(
-                "Buenas tardes, señor. Núcleos tácticos en línea y vigilancia activa. ¿Qué misión ejecutamos ahora?",
-                "A sus órdenes, señor. Espectrómetro estable y enlace directo operativo. ¿En qué puedo asistirle?",
-                "Sistemas activos esta tarde, señor. Listo para procesar consultas, código o multimedia."
-            )
-            else -> listOf(
-                "Buenas noches, señor. Núcleos operando en modo nocturno de alta precisión. ¿En qué le asisto?",
-                "En línea, señor. Todos los subsistemas responden con normalidad. ¿Qué necesita revisar?",
-                "Núcleo neuronal activo, señor. A la espera de sus instrucciones."
-            )
-        }
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val ultimo = prefs.getInt(KEY_ULTIMO_SALUDO, -1)
-        var idx = Random.nextInt(saludos.size)
-        if (idx == ultimo && saludos.size > 1) {
-            idx = (idx + 1) % saludos.size
+        val ultimoIndice = prefs.getInt("ultimo_saludo_idx", -1)
+        val hora = SimpleDateFormat("HH", Locale.getDefault()).format(Date()).toIntOrNull() ?: 12
+
+        val franja = when (hora) {
+            in 5..11 -> "Buenos días, señor."
+            in 12..18 -> "Buenas tardes, señor."
+            in 19..23 -> "Buenas noches, señor."
+            else -> "Trabajando en turno nocturno, señor."
         }
-        prefs.edit().putInt(KEY_ULTIMO_SALUDO, idx).apply()
-        return saludos[idx]
+
+        val variantes = listOf(
+            "$franja Los dos núcleos básicos y cinco núcleos tácticos están operativos. ¿Qué misión iniciamos?",
+            "$franja Núcleo geodésico estabilizado y enlace directo listo. Estoy atento a sus instrucciones.",
+            "$franja Todos los sistemas sensoriales y cognitivos en línea. ¿En qué puedo asistirle hoy?",
+            "$franja Vigilancia activa y canales despejados. Dígame cómo procedemos."
+        )
+
+        var nuevoIdx = Random.nextInt(variantes.size)
+        if (nuevoIdx == ultimoIndice && variantes.size > 1) {
+            nuevoIdx = (nuevoIdx + 1) % variantes.size
+        }
+        prefs.edit().putInt("ultimo_saludo_idx", nuevoIdx).apply()
+        return variantes[nuevoIdx]
     }
 
     private fun verificarPermisosYArrancar() {
-        val permisosFaltantes = ArrayList<String>()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-                permisosFaltantes.add(Manifest.permission.RECORD_AUDIO)
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-                checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-            ) {
-                permisosFaltantes.add(Manifest.permission.POST_NOTIFICATIONS)
+                requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQ_PERMISOS)
+                return
             }
         }
-        if (permisosFaltantes.isNotEmpty()) {
-            requestPermissions(permisosFaltantes.toTypedArray(), REQ_PERMISOS)
-            return
-        }
-        iniciarServiciosSegundoPlano()
+        iniciarServiciosPersistentes()
         solicitarExencionBateria()
         reanudarEscucha(1200L)
     }
@@ -484,14 +397,17 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == REQ_PERMISOS) {
-            iniciarServiciosSegundoPlano()
+        val concedido = grantResults.any { it == PackageManager.PERMISSION_GRANTED }
+        if (requestCode == REQ_PERMISOS && concedido) {
+            iniciarServiciosPersistentes()
             solicitarExencionBateria()
-            reanudarEscucha(1000L)
+            reanudarEscucha(800L)
+        } else {
+            agregarMensajeConsola("N.E.Y.T.H.A.N.", "Permiso de micrófono requerido para la escucha continua, señor.")
         }
     }
 
-    private fun iniciarServiciosSegundoPlano() {
+    private fun iniciarServiciosPersistentes() {
         try {
             val bgIntent = Intent(this, NeythanBackgroundService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -499,6 +415,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             } else {
                 startService(bgIntent)
             }
+            activarNucleoTactico(4, 3000L)
         } catch (_: Exception) {
         }
     }
@@ -518,16 +435,6 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         }
     }
 
-    private fun silenciarTonosSistema(silenciar: Boolean) {
-        try {
-            val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            val flag = if (silenciar) AudioManager.ADJUST_MUTE else AudioManager.ADJUST_UNMUTE
-            am.adjustStreamVolume(AudioManager.STREAM_NOTIFICATION, flag, 0)
-            am.adjustStreamVolume(AudioManager.STREAM_SYSTEM, flag, 0)
-        } catch (_: Exception) {
-        }
-    }
-
     private fun configurarReconocedor() {
         try {
             speechRecognizer?.destroy()
@@ -535,9 +442,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)
             speechRecognizer?.setRecognitionListener(object : RecognitionListener {
                 override fun onReadyForSpeech(params: Bundle?) {
-                    if (!estaHablando) {
+                    if (!estaHablando && escuchaActiva) {
                         estadoActual = "ESCUCHANDO"
-                        nucleoBasico1Voz = true
                     }
                 }
 
@@ -548,25 +454,24 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 }
 
                 override fun onBufferReceived(buffer: ByteArray?) {}
-
                 override fun onEndOfSpeech() {
                     nivelVozUsuario = 0f
                 }
 
                 override fun onError(error: Int) {
                     nivelVozUsuario = 0f
-                    if (!estaHablando && enPrimerPlano) {
-                        reanudarEscucha(1400L)
+                    if (!estaHablando && escuchaActiva) {
+                        reanudarEscucha(1500L)
                     }
                 }
 
                 override fun onResults(results: Bundle?) {
                     nivelVozUsuario = 0f
                     val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                    if (!matches.isNullOrEmpty() && matches[0].isNotBlank()) {
+                    if (!matches.isNullOrEmpty()) {
                         procesarTextoCapturado(matches[0])
-                    } else if (enPrimerPlano) {
-                        reanudarEscucha(1200L)
+                    } else if (escuchaActiva) {
+                        reanudarEscucha(1100L)
                     }
                 }
 
@@ -574,31 +479,31 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 override fun onEvent(eventType: Int, params: Bundle?) {}
             })
         } catch (_: Exception) {
-            if (enPrimerPlano) reanudarEscucha(1800L)
+            if (escuchaActiva) reanudarEscucha(2000L)
         }
     }
 
     private fun reanudarEscucha(retrasoMs: Long) {
         mainHandler.removeCallbacks(tareaEscucha)
+        if (!escuchaActiva) return
         mainHandler.postDelayed(tareaEscucha, retrasoMs)
     }
 
     private val tareaEscucha = Runnable {
-        if (estaHablando || !enPrimerPlano) return@Runnable
+        if (estaHablando || !escuchaActiva) return@Runnable
         try {
-            silenciarTonosSistema(true)
             if (speechRecognizer == null) {
                 configurarReconocedor()
             }
             val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE, "es-MX")
-                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
             }
             speechRecognizer?.startListening(intent)
         } catch (_: Exception) {
             configurarReconocedor()
-            if (enPrimerPlano) reanudarEscucha(1800L)
+            reanudarEscucha(1800L)
         }
     }
 
@@ -609,7 +514,6 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             speechRecognizer?.cancel()
         } catch (_: Exception) {
         }
-        silenciarTonosSistema(false)
     }
 
     private fun procesarTextoCapturado(textoRaw: String) {
@@ -619,8 +523,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         val contieneWakeWord = palabrasClave.any { lower.contains(it) }
         val enVentanaActiva = System.currentTimeMillis() < conversacionActivaHasta
 
-        if (!contieneWakeWord && !enVentanaActiva && !esperandoPermisoFallo) {
-            if (enPrimerPlano) reanudarEscucha(1100L)
+        if (!contieneWakeWord && !enVentanaActiva) {
+            if (escuchaActiva) reanudarEscucha(1100L)
             return
         }
 
@@ -630,7 +534,6 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         }
 
         if (orden.isEmpty()) {
-            conversacionActivaHasta = System.currentTimeMillis() + 22000L
             hablar("A sus órdenes, señor. ¿Qué necesita?")
             return
         }
@@ -639,108 +542,80 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     }
 
     private fun procesarOrdenDirecta(orden: String) {
-        agregarMensajeConsola("Tú", orden, "#00D8FF")
+        agregarMensajeConsola("Tú", orden)
         estadoActual = "PROCESANDO"
-        conversacionActivaHasta = System.currentTimeMillis() + 25000L
         val lower = orden.lowercase(Locale.getDefault())
 
-        // 1. Respuesta a solicitud de permiso para reportar fallo
-        if (esperandoPermisoFallo) {
-            esperandoPermisoFallo = false
+        // Gestión de permiso pendiente del núcleo supervisor
+        if (esperandoPermisoReporte && falloPendienteDetalle != null) {
             if (lower.contains("sí") || lower.contains("si") || lower.contains("autorizo") ||
-                lower.contains("dime") || lower.contains("adelante") || lower.contains("revisa")
+                lower.contains("adelante") || lower.contains("dime") || lower.contains("revisa")
             ) {
-                nucleoTactico5Supervisor = true
-                hablar("Autorización confirmada, señor. $falloPendienteDetalle")
-            } else {
-                hablar("Entendido, señor. Mantengo el informe en reserva hasta que lo indique.")
+                esperandoPermisoReporte = false
+                val detalle = falloPendienteDetalle ?: "Sin detalles adicionales."
+                falloPendienteDetalle = null
+                activarNucleoTactico(5, 6000L)
+                hablar("Autorización recibida, señor. $detalle")
+                return
+            } else if (lower.contains("no") || lower.contains("luego") || lower.contains("cancela")) {
+                esperandoPermisoReporte = false
+                falloPendienteDetalle = null
+                hablar("Entendido, señor. Mantengo el registro en silencio.")
+                return
             }
+        }
+
+        if (ejecutarComandoLocalSiAplica(orden)) {
             return
         }
 
-        // 2. Consulta de estado de los 7 núcleos
-        if (lower.contains("núcleo") || lower.contains("nucleo") || lower.contains("estado del sistema")) {
-            nucleoTactico5Supervisor = true
-            hablar(
-                "Los dos núcleos básicos de voz y memoria operan de forma continua, señor. " +
-                    "Los cinco núcleos tácticos —cognitivo, visión, ejecución, proactividad y supervisor— están listos bajo demanda."
-            )
-            return
-        }
-
-        // 3. Reloj y fecha exacta del teléfono
-        if (lower.contains("qué hora") || lower.contains("que hora") || lower.contains("dime la hora") ||
-            lower.contains("qué fecha") || lower.contains("que fecha") || lower.contains("qué día es")
-        ) {
-            nucleoTactico4Proactivo = true
-            val fmtHora = SimpleDateFormat("hh:mm a", Locale("es", "MX"))
-            val fmtFecha = SimpleDateFormat("EEEE d 'de' MMMM 'de' yyyy", Locale("es", "MX"))
-            val ahora = Date()
-            hablar("Son las ${fmtHora.format(ahora)}, señor. Hoy es ${fmtFecha.format(ahora)}.")
-            return
-        }
-
-        // 4. Control multimedia y reproducción automática real en Spotify
-        if (ejecutarComandoMultimedia(lower)) {
-            return
-        }
-
-        // 5. Burbuja flotante
-        if (lower.contains("burbuja") || lower.contains("flotante")) {
-            nucleoTactico3Ejecucion = true
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
-                val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
-                startActivity(intent)
-                hablar("Por favor autorice el permiso de superposición en pantalla, señor.")
-            } else {
-                startService(Intent(this, FloatingService::class.java))
-                hablar("Burbuja flotante activada sobre sus aplicaciones, señor.")
-            }
-            return
-        }
-
-        // 6. Consulta cognitiva directa a Gemini
-        nucleoTactico1Cognitivo = true
         consultarGeminiDirecto(orden)
     }
 
-    private fun ejecutarComandoMultimedia(lower: String): Boolean {
-        val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    private fun ejecutarComandoLocalSiAplica(orden: String): Boolean {
+        val lower = orden.lowercase(Locale.getDefault())
 
+        // Hora y fecha exacta del dispositivo
+        if (lower.contains("qué hora") || lower.contains("que hora") || lower.contains("dime la hora") || lower == "hora") {
+            activarNucleoTactico(4, 3000L)
+            val horaFmt = SimpleDateFormat("hh:mm a", Locale("es", "MX")).format(Date())
+            hablar("Son exactamente las $horaFmt, señor.")
+            return true
+        }
+
+        if (lower.contains("qué fecha") || lower.contains("que fecha") || lower.contains("qué día es") || lower.contains("que dia es")) {
+            activarNucleoTactico(4, 3000L)
+            val fechaFmt = SimpleDateFormat("EEEE d 'de' MMMM 'de' yyyy", Locale("es", "MX")).format(Date())
+            hablar("Hoy es $fechaFmt, señor.")
+            return true
+        }
+
+        // Control multimedia: pausa / siguiente / anterior
         if (lower.contains("pausa") || lower.contains("detén la música") || lower.contains("deten la musica")) {
-            nucleoTactico3Ejecucion = true
-            enviarPulsacionMedia(am, KeyEvent.KEYCODE_MEDIA_PAUSE)
+            activarNucleoTactico(3, 3500L)
+            enviarEventoMultimedia(KeyEvent.KEYCODE_MEDIA_PAUSE)
             hablar("Reproducción pausada, señor.")
             return true
         }
 
-        if (lower.contains("continúa") || lower.contains("continua") || lower.contains("reanuda")) {
-            nucleoTactico3Ejecucion = true
-            enviarPulsacionMedia(am, KeyEvent.KEYCODE_MEDIA_PLAY)
-            hablar("Reanudando reproducción, señor.")
-            return true
-        }
-
         if (lower.contains("siguiente canción") || lower.contains("siguiente cancion") || lower.contains("cambia de canción")) {
-            nucleoTactico3Ejecucion = true
-            enviarPulsacionMedia(am, KeyEvent.KEYCODE_MEDIA_NEXT)
-            hablar("Pasando a la siguiente pista, señor.")
+            activarNucleoTactico(3, 3500L)
+            enviarEventoMultimedia(KeyEvent.KEYCODE_MEDIA_NEXT)
+            hablar("Siguiente pista, señor.")
             return true
         }
 
-        if (lower.contains("canción anterior") || lower.contains("cancion anterior") || lower.contains("regresa la canción")) {
-            nucleoTactico3Ejecucion = true
-            enviarPulsacionMedia(am, KeyEvent.KEYCODE_MEDIA_PREVIOUS)
+        if (lower.contains("canción anterior") || lower.contains("cancion anterior")) {
+            activarNucleoTactico(3, 3500L)
+            enviarEventoMultimedia(KeyEvent.KEYCODE_MEDIA_PREVIOUS)
             hablar("Regresando a la pista anterior, señor.")
             return true
         }
 
-        val esOrdenMusica = lower.contains("spotify") || lower.contains("pon música") || lower.contains("pon musica") ||
-            lower.contains("reproduce") || lower.contains("pon la canción") || lower.contains("pon la cancion") ||
-            lower.startsWith("pon ") || lower.contains("escuchar ")
-
-        if (esOrdenMusica) {
-            nucleoTactico3Ejecucion = true
+        // Reproducción automática en Spotify
+        if (lower.contains("spotify") || lower.contains("pon música") || lower.contains("pon musica") ||
+            lower.contains("reproduce") || lower.contains("pon ")
+        ) {
             val consulta = lower
                 .replace("en spotify", "")
                 .replace("spotify", "")
@@ -749,109 +624,259 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 .replace("pon musica de", "")
                 .replace("pon música", "")
                 .replace("pon musica", "")
-                .replace("pon la canción", "")
-                .replace("pon la cancion", "")
-                .replace("quiero escuchar", "")
-                .replace("escuchar", "")
-                .replace(Regex("^pon\\s+"), "")
-                .replace("abre", "")
+                .replace("pon ", "")
                 .trim()
 
-            try {
-                if (consulta.isNotEmpty()) {
-                    // Intent oficial de reproducción directa en Spotify sin quedarse solo en búsqueda
-                    val playIntent = Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH).apply {
-                        setPackage("com.spotify.music")
-                        putExtra(MediaStore.EXTRA_MEDIA_FOCUS, "vnd.android.cursor.item/*")
-                        putExtra(SearchManager.QUERY, consulta)
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                    startActivity(playIntent)
+            activarNucleoTactico(3, 5000L)
+            reproducirEnSpotifyAuto(consulta)
+            return true
+        }
 
-                    // Pulso extra PLAY tras 2.2 segundos para asegurar inicio de audio
-                    mainHandler.postDelayed({
-                        enviarPulsacionMedia(am, KeyEvent.KEYCODE_MEDIA_PLAY)
-                    }, 2200L)
-
-                    hablar("Reproduciendo $consulta en Spotify, señor.")
-                } else {
-                    val launchIntent = packageManager.getLaunchIntentForPackage("com.spotify.music")?.apply {
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                    if (launchIntent != null) {
-                        startActivity(launchIntent)
-                        mainHandler.postDelayed({
-                            enviarPulsacionMedia(am, KeyEvent.KEYCODE_MEDIA_PLAY)
-                        }, 1800L)
-                        hablar("Abriendo Spotify e iniciando reproducción, señor.")
-                    } else {
-                        hablar("No encontré Spotify instalado en este dispositivo, señor.")
-                    }
-                }
-            } catch (_: Exception) {
-                try {
-                    val fallback = Intent(Intent.ACTION_VIEW, Uri.parse("spotify:search:${Uri.encode(consulta)}")).apply {
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                    startActivity(fallback)
-                    mainHandler.postDelayed({
-                        enviarPulsacionMedia(am, KeyEvent.KEYCODE_MEDIA_PLAY)
-                    }, 2200L)
-                    hablar("Iniciando $consulta en Spotify, señor.")
-                } catch (_: Exception) {
-                    hablar("No fue posible iniciar Spotify en este momento, señor.")
-                }
-            }
+        // Estado de los 7 núcleos
+        if (lower.contains("estado de núcleos") || lower.contains("estado de nucleos") || lower.contains("diagnóstico")) {
+            activarNucleoTactico(5, 5000L)
+            hablar("Los dos núcleos básicos de voz y memoria operan al cien por ciento. Los cinco núcleos tácticos se encuentran en guardia listos para despliegue, señor.")
             return true
         }
 
         return false
     }
 
-    private fun enviarPulsacionMedia(am: AudioManager, keyCode: Int) {
+    private fun reproducirEnSpotifyAuto(cancionOArtista: String) {
         try {
-            val down = KeyEvent(KeyEvent.ACTION_DOWN, keyCode)
-            val up = KeyEvent(KeyEvent.ACTION_UP, keyCode)
-            am.dispatchMediaKeyEvent(down)
-            am.dispatchMediaKeyEvent(up)
+            val query = if (cancionOArtista.isNotEmpty()) cancionOArtista else "música electrónica"
+            val intentPlay = Intent("android.media.action.MEDIA_PLAY_FROM_SEARCH").apply {
+                setPackage("com.spotify.music")
+                putExtra("query", query)
+                putExtra(android.app.SearchManager.QUERY, query)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(intentPlay)
+
+            mainHandler.postDelayed({
+                enviarEventoMultimedia(KeyEvent.KEYCODE_MEDIA_PLAY)
+            }, 1800L)
+
+            hablar("Iniciando reproducción de $query en Spotify, señor.")
+        } catch (_: Exception) {
+            try {
+                val uri = Uri.parse("spotify:search:${Uri.encode(cancionOArtista)}")
+                startActivity(Intent(Intent.ACTION_VIEW, uri).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                })
+                hablar("Abriendo $cancionOArtista en Spotify, señor.")
+            } catch (_: Exception) {
+                hablar("No encontré Spotify instalado en este dispositivo, señor.")
+            }
+        }
+    }
+
+    private fun enviarEventoMultimedia(keyCode: Int) {
+        try {
+            val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, keyCode))
+            am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, keyCode))
         } catch (_: Exception) {
         }
     }
 
-    private fun auditarEstadoGitHubDiscreto() {
+    private fun obtenerClaveGemini(): String {
+        return try {
+            BuildConfig.GEMINI_API_KEY.trim()
+        } catch (_: Exception) {
+            ""
+        }
+    }
+
+    private fun obtenerFechaHoraExactaDispositivo(): String {
+        val sdf = SimpleDateFormat("EEEE dd/MM/yyyy HH:mm:ss", Locale("es", "MX"))
+        val tz = TimeZone.getDefault().id
+        return "${sdf.format(Date())} ($tz)"
+    }
+
+    private fun detectarMejorModeloFlash(apiKey: String): String {
+        modeloGeminiDetectado?.let { return it }
+        try {
+            val url = URL("https://generativelanguage.googleapis.com/v1beta/models?key=$apiKey")
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 7000
+                readTimeout = 7000
+            }
+            if (conn.responseCode in 200..299) {
+                val body = BufferedReader(InputStreamReader(conn.inputStream, "UTF-8")).use { it.readText() }
+                val models = JSONObject(body).optJSONArray("models") ?: JSONArray()
+                val candidatos = ArrayList<String>()
+                for (i in 0 until models.length()) {
+                    val m = models.getJSONObject(i)
+                    val name = m.optString("name", "").removePrefix("models/")
+                    val methods = m.optJSONArray("supportedGenerationMethods")?.toString() ?: ""
+                    if (methods.contains("generateContent") &&
+                        name.contains("flash", ignoreCase = true) &&
+                        !name.contains("pro", ignoreCase = true) &&
+                        !name.contains("thinking", ignoreCase = true) &&
+                        !name.contains("image", ignoreCase = true) &&
+                        !name.contains("audio", ignoreCase = true)
+                    ) {
+                        candidatos.add(name)
+                    }
+                }
+                val elegido = candidatos.firstOrNull { it.contains("flash-lite") }
+                    ?: candidatos.firstOrNull { it.contains("2.5-flash") }
+                    ?: candidatos.firstOrNull()
+                if (elegido != null) {
+                    modeloGeminiDetectado = elegido
+                    modoMotor = elegido.uppercase(Locale.getDefault())
+                    return elegido
+                }
+            }
+            conn.disconnect()
+        } catch (_: Exception) {
+        }
+        return "gemini-2.5-flash-lite"
+    }
+
+    private fun consultarGeminiDirecto(mensajeUsuario: String) {
+        activarNucleoTactico(1, 6000L)
+        thread {
+            val apiKey = obtenerClaveGemini()
+            if (apiKey.isEmpty() || apiKey.contains("PON_AQUI")) {
+                mainHandler.post {
+                    hablar("La clave de Gemini aún no está configurada en el secreto de compilación, señor.")
+                }
+                return@thread
+            }
+
+            try {
+                val modelo = detectarMejorModeloFlash(apiKey)
+                val url = URL("https://generativelanguage.googleapis.com/v1beta/models/$modelo:generateContent?key=$apiKey")
+                val conn = (url.openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+                    connectTimeout = 10000
+                    readTimeout = 16000
+                    doOutput = true
+                }
+
+                val horaActual = obtenerFechaHoraExactaDispositivo()
+                val instruccionSistema = """
+                    Eres NEYTHAN, un asistente táctico inteligente inspirado en J.A.R.V.I.S.
+                    Tratas al usuario con respeto como "señor".
+                    Fecha y hora real exacta del dispositivo: $horaActual. Nunca inventes una hora distinta.
+                    Responde en español de forma clara, completa, natural y concisa (máximo 3 oraciones bien terminadas, sin dejar frases inconclusas).
+                """.trimIndent()
+
+                val contentsArray = JSONArray()
+                for ((rol, texto) in historialTurnos.takeLast(6)) {
+                    val part = JSONObject().put("text", texto)
+                    val content = JSONObject()
+                        .put("role", rol)
+                        .put("parts", JSONArray().put(part))
+                    contentsArray.put(content)
+                }
+
+                val userPart = JSONObject().put("text", mensajeUsuario)
+                contentsArray.put(
+                    JSONObject()
+                        .put("role", "user")
+                        .put("parts", JSONArray().put(userPart))
+                )
+
+                val genConfig = JSONObject()
+                    .put("temperature", 0.7)
+                    .put("maxOutputTokens", 1200)
+
+                val payload = JSONObject()
+                    .put("system_instruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", instruccionSistema))))
+                    .put("contents", contentsArray)
+                    .put("generationConfig", genConfig)
+
+                OutputStreamWriter(conn.outputStream, "UTF-8").use {
+                    it.write(payload.toString())
+                    it.flush()
+                }
+
+                val code = conn.responseCode
+                if (code in 200..299) {
+                    val respText = BufferedReader(InputStreamReader(conn.inputStream, "UTF-8")).use { it.readText() }
+                    val jsonResp = JSONObject(respText)
+                    val candidates = jsonResp.optJSONArray("candidates")
+                    val sbRespuesta = StringBuilder()
+                    if (candidates != null && candidates.length() > 0) {
+                        val parts = candidates.getJSONObject(0)
+                            .optJSONObject("content")
+                            ?.optJSONArray("parts")
+                        if (parts != null) {
+                            for (i in 0 until parts.length()) {
+                                sbRespuesta.append(parts.getJSONObject(i).optString("text", ""))
+                            }
+                        }
+                    }
+
+                    val respuestaLimpia = sbRespuesta.toString().replace("*", "").trim()
+                    if (respuestaLimpia.isNotEmpty()) {
+                        historialTurnos.add(Pair("user", mensajeUsuario))
+                        historialTurnos.add(Pair("model", respuestaLimpia))
+                        mainHandler.post {
+                            hablar(respuestaLimpia)
+                        }
+                    } else {
+                        mainHandler.post {
+                            hablar("Procesado, señor. ¿Desea ampliar algún punto?")
+                        }
+                    }
+                } else {
+                    modeloGeminiDetectado = null
+                    registrarFalloParaSupervision("El motor cognitivo devolvió código HTTP $code.")
+                    mainHandler.post {
+                        hablar("Detecté una intermitencia en el enlace cognitivo, señor. ¿Me autoriza a darle el diagnóstico?")
+                    }
+                }
+                conn.disconnect()
+            } catch (e: Exception) {
+                registrarFalloParaSupervision("Excepción de red: ${e.javaClass.simpleName}.")
+                mainHandler.post {
+                    hablar("El enlace externo presenta latencia en este momento, señor. Mis núcleos básicos siguen operando.")
+                }
+            }
+        }
+    }
+
+    private fun registrarFalloParaSupervision(detalle: String) {
+        falloPendienteDetalle = detalle
+        esperandoPermisoReporte = true
+        activarNucleoTactico(5, 5000L)
+    }
+
+    private fun auditarCompilacionesGithubSilencioso() {
         thread {
             try {
                 val url = URL("https://api.github.com/repos/$GITHUB_REPO/actions/runs?per_page=1")
                 val conn = (url.openConnection() as HttpURLConnection).apply {
                     requestMethod = "GET"
                     setRequestProperty("Accept", "application/vnd.github+json")
-                    setRequestProperty("User-Agent", "Neythan-Android-Supervisor")
-                    connectTimeout = 5000
+                    setRequestProperty("User-Agent", "NeythanAndroidHUD")
+                    connectTimeout = 6000
                     readTimeout = 6000
                 }
-                if (conn.responseCode == 200) {
-                    val txt = BufferedReader(InputStreamReader(conn.inputStream, "UTF-8")).use { it.readText() }
-                    val json = JSONObject(txt)
-                    val runs = json.optJSONArray("workflow_runs")
+                if (conn.responseCode in 200..299) {
+                    val body = BufferedReader(InputStreamReader(conn.inputStream, "UTF-8")).use { it.readText() }
+                    val runs = JSONObject(body).optJSONArray("workflow_runs")
                     if (runs != null && runs.length() > 0) {
                         val ultimo = runs.getJSONObject(0)
                         val runId = ultimo.optLong("id", 0L)
-                        val runNumber = ultimo.optInt("run_number", 0)
                         val conclusion = ultimo.optString("conclusion", "")
                         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                        val yaReportado = prefs.getLong(KEY_ULTIMO_RUN_FAIL, -1L)
+                        val ultimoReportado = prefs.getLong("ultimo_run_fallido", 0L)
 
-                        if (conclusion == "failure" && runId != yaReportado) {
-                            prefs.edit().putLong(KEY_ULTIMO_RUN_FAIL, runId).apply()
-                            falloPendienteResumen = "Detecté una anomalía en la compilación número $runNumber de GitHub."
-                            falloPendienteDetalle =
-                                "La compilación número $runNumber terminó con estado fallido en GitHub Actions. " +
-                                "Le recomiendo revisar las líneas rojas de Gradle en el registro de acciones para aplicar el parche."
-                            esperandoPermisoFallo = true
+                        if (conclusion == "failure" && runId != ultimoReportado) {
+                            prefs.edit().putLong("ultimo_run_fallido", runId).apply()
+                            falloPendienteDetalle = "La compilación número $runId en GitHub Actions finalizó con error de construcción."
+                            esperandoPermisoReporte = true
+                            activarNucleoTactico(5, 6000L)
                             mainHandler.postDelayed({
                                 if (!estaHablando) {
-                                    nucleoTactico5Supervisor = true
-                                    hablar("Señor, $falloPendienteResumen ¿Me autoriza a informarle los detalles?")
+                                    hablar("Señor, detecté una anomalía en la última compilación de GitHub. ¿Me autoriza a informarle los detalles?")
                                 }
                             }, 5500L)
                         }
@@ -863,165 +888,9 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         }
     }
 
-    private fun consultarGeminiDirecto(mensajeUsuario: String) {
-        val apiKey = GEMINI_API_KEY.trim()
-        if (apiKey.isEmpty() || apiKey.contains("PON_AQUI")) {
-            hablar("Falta configurar la clave API de Gemini en los secretos de compilación, señor.")
-            return
-        }
-
-        thread {
-            try {
-                if (modeloGeminiActivo == null) {
-                    modeloGeminiActivo = descubrirModeloFlashDisponible(apiKey)
-                }
-                val modelo = modeloGeminiActivo ?: "gemini-2.5-flash-lite"
-                val respuesta = llamarEndpointGemini(apiKey, modelo, mensajeUsuario)
-                if (respuesta != null) {
-                    historialTurnos.add(Pair("user", mensajeUsuario))
-                    historialTurnos.add(Pair("model", respuesta))
-                    while (historialTurnos.size > 10) {
-                        historialTurnos.removeAt(0)
-                    }
-                    mainHandler.post {
-                        hablar(respuesta)
-                    }
-                } else {
-                    modeloGeminiActivo = null
-                    mainHandler.post {
-                        hablar("El núcleo cognitivo tardó en responder, señor. Intente formular su consulta nuevamente.")
-                    }
-                }
-            } catch (_: Exception) {
-                mainHandler.post {
-                    hablar("Ocurrió una intermitencia en el enlace cognitivo, señor. Sigo operativo con mis núcleos básicos.")
-                }
-            }
-        }
-    }
-
-    private fun descubrirModeloFlashDisponible(apiKey: String): String {
-        try {
-            val url = URL("https://generativelanguage.googleapis.com/v1beta/models?key=$apiKey")
-            val conn = (url.openConnection() as HttpURLConnection).apply {
-                requestMethod = "GET"
-                connectTimeout = 6000
-                readTimeout = 8000
-            }
-            if (conn.responseCode == 200) {
-                val txt = BufferedReader(InputStreamReader(conn.inputStream, "UTF-8")).use { it.readText() }
-                val models = JSONObject(txt).optJSONArray("models")
-                val candidatos = ArrayList<String>()
-                if (models != null) {
-                    for (i in 0 until models.length()) {
-                        val m = models.getJSONObject(i)
-                        val name = m.optString("name", "").removePrefix("models/")
-                        val methods = m.optJSONArray("supportedGenerationMethods")?.toString() ?: ""
-                        if (methods.contains("generateContent") &&
-                            name.contains("flash", ignoreCase = true) &&
-                            !name.contains("pro", ignoreCase = true) &&
-                            !name.contains("thinking", ignoreCase = true)
-                        ) {
-                            candidatos.add(name)
-                        }
-                    }
-                }
-                conn.disconnect()
-                val preferido = candidatos.firstOrNull { it.contains("flash-lite") }
-                    ?: candidatos.firstOrNull { it.contains("2.5-flash") }
-                    ?: candidatos.firstOrNull()
-                if (preferido != null) return preferido
-            }
-            conn.disconnect()
-        } catch (_: Exception) {
-        }
-        return "gemini-2.5-flash-lite"
-    }
-
-    private fun llamarEndpointGemini(apiKey: String, modelo: String, mensajeUsuario: String): String? {
-        val url = URL("https://generativelanguage.googleapis.com/v1beta/models/$modelo:generateContent?key=$apiKey")
-        val conn = (url.openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"
-            setRequestProperty("Content-Type", "application/json; charset=UTF-8")
-            connectTimeout = 10000
-            readTimeout = 18000
-            doOutput = true
-        }
-
-        val fmt = SimpleDateFormat("EEEE d 'de' MMMM 'de' yyyy, hh:mm a", Locale("es", "MX"))
-        val fechaHoraReal = fmt.format(Date())
-
-        val sysInstruction = JSONObject().apply {
-            put(
-                "parts",
-                JSONArray().put(
-                    JSONObject().put(
-                        "text",
-                        "Eres N.E.Y.T.H.A.N., el asistente táctico personal de Jonathan. Trátalo siempre de 'señor'. " +
-                            "Operas con 2 núcleos básicos (voz/sensor y memoria) y 5 núcleos tácticos (cognitivo, visión, ejecución, proactividad y supervisor). " +
-                            "Responde en español claro, directo, elegante y completo en 2 a 4 oraciones sin listas largas ni asteriscos. " +
-                            "Fecha y hora real del teléfono: $fechaHoraReal."
-                    )
-                )
-            )
-        }
-
-        val contents = JSONArray()
-        for ((rol, texto) in historialTurnos) {
-            contents.put(
-                JSONObject().apply {
-                    put("role", rol)
-                    put("parts", JSONArray().put(JSONObject().put("text", texto)))
-                }
-            )
-        }
-        contents.put(
-            JSONObject().apply {
-                put("role", "user")
-                put("parts", JSONArray().put(JSONObject().put("text", mensajeUsuario)))
-            }
-        )
-
-        val payload = JSONObject().apply {
-            put("system_instruction", sysInstruction)
-            put("contents", contents)
-            put(
-                "generationConfig",
-                JSONObject().apply {
-                    put("temperature", 0.65)
-                    put("maxOutputTokens", 1200)
-                }
-            )
-        }
-
-        OutputStreamWriter(conn.outputStream, "UTF-8").use {
-            it.write(payload.toString())
-            it.flush()
-        }
-
-        val code = conn.responseCode
-        if (code in 200..299) {
-            val raw = BufferedReader(InputStreamReader(conn.inputStream, "UTF-8")).use { it.readText() }
-            conn.disconnect()
-            val json = JSONObject(raw)
-            val candidates = json.optJSONArray("candidates") ?: return null
-            if (candidates.length() == 0) return null
-            val parts = candidates.getJSONObject(0).optJSONObject("content")?.optJSONArray("parts") ?: return null
-            val sb = StringBuilder()
-            for (i in 0 until parts.length()) {
-                val t = parts.getJSONObject(i).optString("text", "")
-                if (t.isNotEmpty()) sb.append(t)
-            }
-            return sb.toString().replace("*", "").trim()
-        } else {
-            conn.disconnect()
-            return null
-        }
-    }
-
     private fun hablar(texto: String) {
         detenerEscuchaTemporal()
-        agregarMensajeConsola("N.E.Y.T.H.A.N.", texto, "#00E676")
+        agregarMensajeConsola("N.E.Y.T.H.A.N.", texto)
         estadoActual = "HABLANDO"
         solicitarFocoAudioMultimedia()
 
@@ -1029,33 +898,19 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             val params = Bundle().apply {
                 putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_MUSIC)
             }
-            tts?.speak(texto, TextToSpeech.QUEUE_FLUSH, params, "NEYTHAN_HUD_UTTERANCE")
+            tts?.speak(texto, TextToSpeech.QUEUE_FLUSH, params, "NEYTHAN_HUD_MSG")
         } else {
             estaHablando = false
-            estadoActual = "ESCUCHANDO"
-            desactivarNucleosTacticos()
-            if (enPrimerPlano) reanudarEscucha(1200L)
+            estadoActual = if (escuchaActiva) "ESCUCHANDO" else "PAUSADO"
+            if (escuchaActiva) reanudarEscucha(1200L)
         }
-    }
-
-    private fun desactivarNucleosTacticos() {
-        nucleoTactico1Cognitivo = false
-        nucleoTactico2Vision = false
-        nucleoTactico3Ejecucion = false
-        nucleoTactico4Proactivo = false
-        nucleoTactico5Supervisor = false
     }
 
     private fun solicitarFocoAudioMultimedia() {
         try {
-            val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            val maxVol = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-            val curVol = am.getStreamVolume(AudioManager.STREAM_MUSIC)
-            if (curVol < (maxVol * 0.45).toInt()) {
-                am.setStreamVolume(AudioManager.STREAM_MUSIC, (maxVol * 0.75).toInt(), 0)
-            }
+            val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+                val focusReq = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
                     .setAudioAttributes(
                         AudioAttributes.Builder()
                             .setUsage(AudioAttributes.USAGE_ASSISTANT)
@@ -1063,57 +918,27 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                             .build()
                     )
                     .build()
-                am.requestAudioFocus(req)
+                audioManager.requestAudioFocus(focusReq)
             }
         } catch (_: Exception) {
-        }
-    }
-
-    private fun actualizarTelemetriaSistema() {
-        try {
-            val actManager = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-            val memInfo = ActivityManager.MemoryInfo()
-            actManager.getMemoryInfo(memInfo)
-            val usada = memInfo.totalMem - memInfo.availMem
-            ramPorcentaje = ((usada.toDouble() / memInfo.totalMem.toDouble()) * 100.0).toInt().coerceIn(12, 95)
-        } catch (_: Exception) {
-        }
-        hzActual = when (estadoActual) {
-            "HABLANDO" -> 128 + (sin(System.currentTimeMillis() / 120.0) * 18.0).toInt()
-            "PROCESANDO" -> 115 + (sin(System.currentTimeMillis() / 90.0) * 12.0).toInt()
-            else -> 100 + (nivelVozUsuario * 3f).toInt()
         }
     }
 
     private fun iniciarBucleAnimacion() {
         mainHandler.post(object : Runnable {
             override fun run() {
-                framesContador++
-                val ahora = System.currentTimeMillis()
-                if (ahora - ultimoTiempoFps >= 1000L) {
-                    fpsActual = framesContador.coerceIn(24, 60)
-                    framesContador = 0
-                    ultimoTiempoFps = ahora
-                    actualizarTelemetriaSistema()
-                }
                 hudView.invalidate()
-                mainHandler.postDelayed(this, 20L)
+                mainHandler.postDelayed(this, 33L)
             }
         })
     }
 
-    override fun onResume() {
-        super.onResume()
-        enPrimerPlano = true
-        if (!estaHablando) {
-            reanudarEscucha(600L)
-        }
-    }
-
-    override fun onPause() {
-        enPrimerPlano = false
-        detenerEscuchaTemporal()
-        super.onPause()
+    private fun dp(valor: Int): Int {
+        return TypedValue.applyDimension(
+            TypedValue.COMPLEX_UNIT_DIP,
+            valor.toFloat(),
+            resources.displayMetrics
+        ).toInt()
     }
 
     override fun onDestroy() {
@@ -1127,27 +952,16 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         super.onDestroy()
     }
 
-    private fun dp(valor: Int): Int {
-        return TypedValue.applyDimension(
-            TypedValue.COMPLEX_UNIT_DIP,
-            valor.toFloat(),
-            resources.displayMetrics
-        ).toInt()
-    }
-
-    inner class GeodesicHudView(context: Context) : View(context) {
+    inner class NeythanGeodesicHudView(context: Context) : View(context) {
         private val paintFondo = Paint(Paint.ANTI_ALIAS_FLAG)
-        private val paintMarco = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.STROKE
-            strokeWidth = 2.5f
-        }
-        private val paintEsquina = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.STROKE
-            strokeWidth = 6f
-        }
-        private val paintGeodesic = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        private val paintLinea = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
             strokeWidth = 2.2f
+        }
+        private val paintAnilloDash = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = 2.5f
+            pathEffect = DashPathEffect(floatArrayOf(18f, 12f), 0f)
         }
         private val paintNodo = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.FILL
@@ -1158,33 +972,36 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         private val paintBarraSpec = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.FILL
         }
-        private val paintChip = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.FILL
-        }
-        private val paintChipBorde = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.STROKE
-            strokeWidth = 2f
-        }
 
         private val verticesEsfera = ArrayList<FloatArray>()
+        private val aristasEsfera = ArrayList<Pair<Int, Int>>()
 
         init {
-            // Generar malla geodésica 3D de 42 vértices
-            val anillos = 5
-            val segmentos = 10
-            verticesEsfera.add(floatArrayOf(0f, 1f, 0f))
-            for (i in 1 until anillos) {
-                val phi = Math.PI * i / anillos
-                val y = cos(phi).toFloat()
-                val r = sin(phi).toFloat()
-                for (j in 0 until segmentos) {
-                    val theta = 2.0 * Math.PI * j / segmentos
-                    val x = (r * cos(theta)).toFloat()
-                    val z = (r * sin(theta)).toFloat()
-                    verticesEsfera.add(floatArrayOf(x, y, z))
+            construirMallaGeodesica()
+        }
+
+        private fun construirMallaGeodesica() {
+            val t = ((1.0 + Math.sqrt(5.0)) / 2.0).toFloat()
+            val raw = listOf(
+                floatArrayOf(-1f, t, 0f), floatArrayOf(1f, t, 0f), floatArrayOf(-1f, -t, 0f), floatArrayOf(1f, -t, 0f),
+                floatArrayOf(0f, -1f, t), floatArrayOf(0f, 1f, t), floatArrayOf(0f, -1f, -t), floatArrayOf(0f, 1f, -t),
+                floatArrayOf(t, 0f, -1f), floatArrayOf(t, 0f, 1f), floatArrayOf(-t, 0f, -1f), floatArrayOf(-t, 0f, 1f)
+            )
+            for (v in raw) {
+                val len = Math.sqrt((v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).toDouble()).toFloat()
+                verticesEsfera.add(floatArrayOf(v[0] / len, v[1] / len, v[2] / len))
+            }
+            for (i in verticesEsfera.indices) {
+                for (j in i + 1 until verticesEsfera.size) {
+                    val dx = verticesEsfera[i][0] - verticesEsfera[j][0]
+                    val dy = verticesEsfera[i][1] - verticesEsfera[j][1]
+                    val dz = verticesEsfera[i][2] - verticesEsfera[j][2]
+                    val dist = Math.sqrt((dx * dx + dy * dy + dz * dz).toDouble()).toFloat()
+                    if (dist < 1.15f) {
+                        aristasEsfera.add(Pair(i, j))
+                    }
                 }
             }
-            verticesEsfera.add(floatArrayOf(0f, -1f, 0f))
         }
 
         override fun onDraw(canvas: Canvas) {
@@ -1194,245 +1011,190 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             if (w <= 0f || h <= 0f) return
 
             val tiempo = System.currentTimeMillis() / 1000.0
-
-            val colorTema = when (estadoActual) {
-                "PROCESANDO" -> Color.parseColor("#FF9100")
-                "HABLANDO" -> Color.parseColor("#00E676")
-                "ALERTA" -> Color.parseColor("#FF1744")
-                else -> Color.parseColor("#00D8FF")
+            val colorPrincipal = when {
+                esperandoPermisoReporte -> Color.parseColor("#FF3D57")
+                estadoActual == "HABLANDO" -> Color.parseColor("#00E676")
+                estadoActual == "PROCESANDO" -> Color.parseColor("#FFB300")
+                estadoActual == "PAUSADO" -> Color.parseColor("#546E7A")
+                else -> Color.parseColor("#00E5FF")
             }
 
-            // Degradado radial profundo de fondo
+            // Fondo radial profundo
             paintFondo.shader = RadialGradient(
-                w * 0.5f, h * 0.44f, w.coerceAtLeast(h) * 0.75f,
-                intArrayOf(
-                    Color.argb(42, Color.red(colorTema), Color.green(colorTema), Color.blue(colorTema)),
-                    Color.parseColor("#040B14"),
-                    Color.parseColor("#020509")
-                ),
+                w / 2f, h * 0.48f, w.coerceAtLeast(h) * 0.7f,
+                intArrayOf(Color.parseColor("#0D223A"), Color.parseColor("#050B14"), Color.parseColor("#03060C")),
                 floatArrayOf(0f, 0.55f, 1f),
                 Shader.TileMode.CLAMP
             )
             canvas.drawRect(0f, 0f, w, h, paintFondo)
 
-            val pad = dp(10).toFloat()
-            val rectMarco = RectF(pad, pad, w - pad, h - dp(2).toFloat())
+            // Marco técnico y esquinas
+            paintLinea.color = colorPrincipal
+            paintLinea.alpha = 90
+            canvas.drawRect(4f, 4f, w - 4f, h - 4f, paintLinea)
 
-            // Marco principal
-            paintMarco.color = Color.argb(95, Color.red(colorTema), Color.green(colorTema), Color.blue(colorTema))
-            canvas.drawRoundRect(rectMarco, 14f, 14f, paintMarco)
+            // Barra superior: 2 Núcleos Básicos
+            dibujarPanelNucleosBasicos(canvas, w, colorPrincipal)
 
-            // Esquinas tácticas brillantes
-            val cornerLen = dp(18).toFloat()
-            paintEsquina.color = colorTema
-            // Top-Left
-            canvas.drawLine(rectMarco.left, rectMarco.top + cornerLen, rectMarco.left, rectMarco.top, paintEsquina)
-            canvas.drawLine(rectMarco.left, rectMarco.top, rectMarco.left + cornerLen, rectMarco.top, paintEsquina)
-            // Top-Right
-            canvas.drawLine(rectMarco.right - cornerLen, rectMarco.top, rectMarco.right, rectMarco.top, paintEsquina)
-            canvas.drawLine(rectMarco.right, rectMarco.top, rectMarco.right, rectMarco.top + cornerLen, paintEsquina)
-            // Bottom-Left
-            canvas.drawLine(rectMarco.left, rectMarco.bottom - cornerLen, rectMarco.left, rectMarco.bottom, paintEsquina)
-            canvas.drawLine(rectMarco.left, rectMarco.bottom, rectMarco.left + cornerLen, rectMarco.bottom, paintEsquina)
-            // Bottom-Right
-            canvas.drawLine(rectMarco.right - cornerLen, rectMarco.bottom, rectMarco.right, rectMarco.bottom, paintEsquina)
-            canvas.drawLine(rectMarco.right, rectMarco.bottom, rectMarco.right, rectMarco.bottom - cornerLen, paintEsquina)
+            // Matriz lateral/superior: 5 Núcleos Tácticos
+            dibujarPanelNucleosTacticos(canvas, w, h)
 
-            // 1. Indicadores superiores: 2 Núcleos Básicos
-            dibujarFilaNucleosBasicos(canvas, rectMarco.left + dp(10), rectMarco.top + dp(10), rectMarco.width() - dp(20))
-
-            // 2. Indicadores secundarios: 5 Núcleos Tácticos
-            dibujarFilaNucleosTacticos(canvas, rectMarco.left + dp(10), rectMarco.top + dp(34), rectMarco.width() - dp(20))
-
-            // 3. Núcleo Geodésico 3D Giratorio en el centro
-            val cx = w * 0.5f
-            val cy = h * 0.47f
-            val pulso = if (estaHablando) {
-                (sin(tiempo * 14.0) * 10.0).toFloat()
-            } else {
-                (sin(tiempo * 3.0) * 4.0).toFloat() + (nivelVozUsuario * 2.5f)
-            }
+            // Núcleo Geodésico 3D Central
+            val cx = w / 2f
+            val cy = h * 0.49f
+            val pulso = if (estaHablando) (sin(tiempo * 14.0) * 10.0).toFloat() else (nivelVozUsuario * 2.5f)
             val radioEsfera = (w.coerceAtMost(h) * 0.24f) + pulso
 
-            // Anillo orbital exterior punteado
-            paintMarco.color = Color.argb(130, Color.red(colorTema), Color.green(colorTema), Color.blue(colorTema))
-            paintMarco.pathEffect = DashPathEffect(floatArrayOf(18f, 12f), (tiempo * 45.0).toFloat())
-            canvas.drawCircle(cx, cy, radioEsfera * 1.18f, paintMarco)
-            paintMarco.pathEffect = null
+            // Anillos orbitales
+            paintAnilloDash.color = colorPrincipal
+            paintAnilloDash.alpha = 150
+            canvas.save()
+            canvas.rotate((tiempo * 24.0 % 360.0).toFloat(), cx, cy)
+            canvas.drawCircle(cx, cy, radioEsfera * 1.28f, paintAnilloDash)
+            canvas.restore()
 
-            // Proyección 3D de vértices y aristas geodésicas
-            val velRot = if (estadoActual == "PROCESANDO") 1.9 else 0.75
+            paintLinea.color = colorPrincipal
+            paintLinea.alpha = 70
+            canvas.drawCircle(cx, cy, radioEsfera * 1.42f, paintLinea)
+
+            // Proyección 3D del icosaedro geodésico
+            val velRot = if (estadoActual == "PROCESANDO") 1.8 else 0.65
             val angY = tiempo * velRot
-            val angX = sin(tiempo * 0.5) * 0.35
-            val cosY = cos(angY).toFloat()
-            val sinY = sin(angY).toFloat()
-            val cosX = cos(angX).toFloat()
-            val sinX = sin(angX).toFloat()
+            val angX = tiempo * (velRot * 0.55)
+            val proyecciones = Array(verticesEsfera.size) { FloatArray(3) }
 
-            val proyectados = ArrayList<FloatArray>(verticesEsfera.size)
-            for (v in verticesEsfera) {
-                val x1 = v[0] * cosY - v[2] * sinY
-                val z1 = v[0] * sinY + v[2] * cosY
-                val y2 = v[1] * cosX - z1 * sinX
-                val z2 = v[1] * sinX + z1 * cosX
+            for (i in verticesEsfera.indices) {
+                val vx = verticesEsfera[i][0]
+                val vy = verticesEsfera[i][1]
+                val vz = verticesEsfera[i][2]
 
-                val escala = 2.6f / (2.6f - z2)
-                val sx = cx + x1 * radioEsfera * escala
-                val sy = cy + y2 * radioEsfera * escala
-                proyectados.add(floatArrayOf(sx, sy, z2))
+                val x1 = (vx * cos(angY) - vz * sin(angY)).toFloat()
+                val z1 = (vx * sin(angY) + vz * cos(angY)).toFloat()
+                val y2 = (vy * cos(angX) - z1 * sin(angX)).toFloat()
+                val z2 = (vy * sin(angX) + z1 * cos(angX)).toFloat()
+
+                val escala = 2.4f / (2.4f - z2 * 0.65f)
+                proyecciones[i][0] = cx + x1 * radioEsfera * escala
+                proyecciones[i][1] = cy + y2 * radioEsfera * escala
+                proyecciones[i][2] = z2
             }
 
-            // Conectar vértices cercanos formando triángulos geodésicos
-            val distMax = radioEsfera * 0.72f
-            val distMaxSq = distMax * distMax
-            for (i in 0 until proyectados.size) {
-                val p1 = proyectados[i]
-                for (j in i + 1 until proyectados.size) {
-                    val p2 = proyectados[j]
-                    val dx = p1[0] - p2[0]
-                    val dy = p1[1] - p2[1]
-                    val dSq = dx * dx + dy * dy
-                    if (dSq < distMaxSq) {
-                        val profundidad = ((p1[2] + p2[2]) * 0.5f + 1f) * 0.5f
-                        val alpha = (45 + profundidad * 165).toInt().coerceIn(30, 220)
-                        paintGeodesic.color = Color.argb(
-                            alpha,
-                            Color.red(colorTema),
-                            Color.green(colorTema),
-                            Color.blue(colorTema)
-                        )
-                        canvas.drawLine(p1[0], p1[1], p2[0], p2[1], paintGeodesic)
-                    }
-                }
-            }
-
-            // Dibujar nodos luminosos
-            for (p in proyectados) {
-                val prof = ((p[2] + 1f) * 0.5f).coerceIn(0f, 1f)
-                paintNodo.color = Color.argb(
-                    (90 + prof * 165).toInt(),
-                    Color.red(colorTema),
-                    Color.green(colorTema),
-                    Color.blue(colorTema)
+            for ((a, b) in aristasEsfera) {
+                val zProm = (proyecciones[a][2] + proyecciones[b][2]) / 2f
+                paintLinea.color = colorPrincipal
+                paintLinea.alpha = (110 + (zProm * 110)).toInt().coerceIn(45, 240)
+                canvas.drawLine(
+                    proyecciones[a][0], proyecciones[a][1],
+                    proyecciones[b][0], proyecciones[b][1],
+                    paintLinea
                 )
-                canvas.drawCircle(p[0], p[1], 2.2f + prof * 2.5f, paintNodo)
             }
 
-            // Título central N E Y T H A N y subtítulo de estado
-            paintTexto.textAlign = Paint.Align.CENTER
+            for (p in proyecciones) {
+                paintNodo.color = Color.WHITE
+                paintNodo.alpha = (140 + (p[2] * 100)).toInt().coerceIn(70, 255)
+                canvas.drawCircle(p[0], p[1], 4.2f, paintNodo)
+            }
+
+            // Etiqueta central NEYTHAN
             paintTexto.color = Color.WHITE
+            paintTexto.textAlign = Paint.Align.CENTER
+            paintTexto.textSize = 30f
             paintTexto.isFakeBoldText = true
-            paintTexto.textSize = dp(16).toFloat()
-            canvas.drawText("N E Y T H A N", cx, cy + dp(4), paintTexto)
+            canvas.drawText("N E Y T H A N", cx, cy + 10f, paintTexto)
 
-            paintTexto.isFakeBoldText = false
-            paintTexto.color = colorTema
-            paintTexto.textSize = dp(9).toFloat()
-            val subEstado = when (estadoActual) {
-                "PROCESANDO" -> "PROCESANDO NÚCLEO COGNITIVO"
-                "HABLANDO" -> "TRANSMITIENDO SÍNTESIS VOCAL"
-                else -> "ESCUCHANDO Y OPERATIVO"
-            }
-            canvas.drawText(subEstado, cx, cy + dp(18), paintTexto)
+            // Espectrómetro de frecuencia inferior
+            dibujarEspectrometroYTelemetria(canvas, w, h, tiempo, colorPrincipal)
+        }
 
-            // 4. Barra inferior de Espectrómetro de Frecuencia + Telemetría HZ / FPS / MEM
-            val ySpecTop = rectMarco.bottom - dp(46)
-            val xLeft = rectMarco.left + dp(12)
-
+        private fun dibujarPanelNucleosBasicos(canvas: Canvas, w: Float, colorPrincipal: Int) {
+            paintTexto.textSize = 21f
+            paintTexto.isFakeBoldText = true
             paintTexto.textAlign = Paint.Align.LEFT
-            paintTexto.color = Color.parseColor("#6BA4C4")
-            paintTexto.textSize = dp(8).toFloat()
-            canvas.drawText("ESPECTRÓMETRO DE FRECUENCIA", xLeft, ySpecTop, paintTexto)
 
-            val numBarras = 22
-            val anchoAreaSpec = rectMarco.width() * 0.54f
-            val pasoBarra = anchoAreaSpec / numBarras
-            val baseBarrasY = rectMarco.bottom - dp(10)
+            val cB1 = if (nucleoBasico1Voz) Color.parseColor("#00E676") else Color.GRAY
+            paintNodo.color = cB1
+            canvas.drawCircle(24f, 30f, 6f, paintNodo)
+            paintTexto.color = cB1
+            canvas.drawText("B1:VOZ/SENSOR", 38f, 37f, paintTexto)
 
-            for (b in 0 until numBarras) {
-                val factorOnda = if (estaHablando) {
-                    (sin(tiempo * 16.0 + b * 0.65) + 1.0) * 0.5
-                } else {
-                    (sin(tiempo * 4.5 + b * 0.5) + 1.0) * 0.22 + (nivelVozUsuario / 18.0)
-                }
-                val altoBarra = (dp(4) + factorOnda * dp(22)).toFloat()
-                val bx = xLeft + b * pasoBarra
-                paintBarraSpec.color = if (b % 3 == 0) Color.parseColor("#00E676") else colorTema
-                canvas.drawRect(bx, baseBarrasY - altoBarra, bx + pasoBarra * 0.62f, baseBarrasY, paintBarraSpec)
-            }
+            val cB2 = if (nucleoBasico2Memoria) Color.parseColor("#00E5FF") else Color.GRAY
+            paintNodo.color = cB2
+            canvas.drawCircle(w * 0.42f, 30f, 6f, paintNodo)
+            paintTexto.color = cB2
+            canvas.drawText("B2:MEMORIA", w * 0.42f + 14f, 37f, paintTexto)
 
-            // Telemetría derecha
-            val xRight = rectMarco.right - dp(12)
             paintTexto.textAlign = Paint.Align.RIGHT
-            paintTexto.color = colorTema
-            paintTexto.isFakeBoldText = true
-            paintTexto.textSize = dp(11).toFloat()
-            canvas.drawText("$hzActual HZ", xRight, ySpecTop + dp(12), paintTexto)
-
-            paintTexto.isFakeBoldText = false
-            paintTexto.color = Color.parseColor("#8BC2E0")
-            paintTexto.textSize = dp(8.5f.toInt()).toFloat()
-            canvas.drawText("FPS: $fpsActual  |  MEM: $ramPorcentaje%", xRight, ySpecTop + dp(25), paintTexto)
-            canvas.drawText("NÚCLEOS: 2B + 5T ONLINE", xRight, ySpecTop + dp(36), paintTexto)
+            paintTexto.color = colorPrincipal
+            canvas.drawText("● $estadoActual", w - 20f, 37f, paintTexto)
         }
 
-        private fun dibujarFilaNucleosBasicos(canvas: Canvas, x: Float, y: Float, anchoTotal: Float) {
-            val etiquetas = listOf(
-                Pair("B1: VOZ / SENSOR", nucleoBasico1Voz),
-                Pair("B2: MEMORIA / ESTADO", nucleoBasico2Memoria)
-            )
-            val gap = dp(6).toFloat()
-            val anchoChip = (anchoTotal - gap) / 2f
-            val altoChip = dp(19).toFloat()
-
-            for (i in etiquetas.indices) {
-                val (label, activo) = etiquetas[i]
-                val cx = x + i * (anchoChip + gap)
-                val rect = RectF(cx, y, cx + anchoChip, y + altoChip)
-                val colorActivo = Color.parseColor("#00E676")
-
-                paintChip.color = if (activo) Color.argb(38, 0, 230, 118) else Color.parseColor("#071320")
-                paintChipBorde.color = if (activo) colorActivo else Color.parseColor("#183A52")
-                canvas.drawRoundRect(rect, 6f, 6f, paintChip)
-                canvas.drawRoundRect(rect, 6f, 6f, paintChipBorde)
-
-                paintTexto.textAlign = Paint.Align.CENTER
-                paintTexto.color = if (activo) colorActivo else Color.parseColor("#547891")
-                paintTexto.textSize = dp(8).toFloat()
-                paintTexto.isFakeBoldText = true
-                canvas.drawText("● $label", rect.centerX(), rect.centerY() + dp(3), paintTexto)
-            }
-        }
-
-        private fun dibujarFilaNucleosTacticos(canvas: Canvas, x: Float, y: Float, anchoTotal: Float) {
+        private fun dibujarPanelNucleosTacticos(canvas: Canvas, w: Float, h: Float) {
             val tacticos = listOf(
-                Pair("T1:COG", nucleoTactico1Cognitivo),
-                Pair("T2:VIS", nucleoTactico2Vision),
-                Pair("T3:EJE", nucleoTactico3Ejecucion),
-                Pair("T4:PRO", nucleoTactico4Proactivo),
-                Pair("T5:SUP", nucleoTactico5Supervisor)
+                Triple("T1:COGNITIVO", nucleoTactico1Cognitivo, "#FFB300"),
+                Triple("T2:VISIÓN", nucleoTactico2Vision, "#E040FB"),
+                Triple("T3:EJECUCIÓN", nucleoTactico3Ejecucion, "#00E676"),
+                Triple("T4:PROACTIVO", nucleoTactico4Proactivo, "#00E5FF"),
+                Triple("T5:SUPERVISOR", nucleoTactico5Supervisor, "#FF3D57")
             )
-            val gap = dp(4).toFloat()
-            val anchoChip = (anchoTotal - gap * (tacticos.size - 1)) / tacticos.size
-            val altoChip = dp(17).toFloat()
 
-            for (i in tacticos.indices) {
-                val (label, activo) = tacticos[i]
-                val cx = x + i * (anchoChip + gap)
-                val rect = RectF(cx, y, cx + anchoChip, y + altoChip)
-                val colorOn = Color.parseColor("#FF9100")
+            paintTexto.textSize = 19f
+            paintTexto.isFakeBoldText = false
+            paintTexto.textAlign = Paint.Align.LEFT
 
-                paintChip.color = if (activo) Color.argb(55, 255, 145, 0) else Color.parseColor("#06111D")
-                paintChipBorde.color = if (activo) colorOn else Color.parseColor("#133247")
-                canvas.drawRoundRect(rect, 5f, 5f, paintChip)
-                canvas.drawRoundRect(rect, 5f, 5f, paintChipBorde)
-
-                paintTexto.textAlign = Paint.Align.CENTER
-                paintTexto.color = if (activo) colorOn else Color.parseColor("#5B87A3")
-                paintTexto.textSize = dp(7.5f.toInt()).toFloat()
-                paintTexto.isFakeBoldText = activo
-                canvas.drawText(label, rect.centerX(), rect.centerY() + dp(2.5f.toInt()), paintTexto)
+            var y = 78f
+            for ((nombre, activo, hexColor) in tacticos) {
+                val color = if (activo) Color.parseColor(hexColor) else Color.parseColor("#3B556E")
+                paintNodo.color = color
+                canvas.drawCircle(24f, y - 6f, if (activo) 6.5f else 4.5f, paintNodo)
+                paintTexto.color = if (activo) Color.WHITE else Color.parseColor("#5C7B99")
+                canvas.drawText(nombre, 38f, y, paintTexto)
+                y += 30f
             }
+        }
+
+        private fun dibujarEspectrometroYTelemetria(
+            canvas: Canvas,
+            w: Float,
+            h: Float,
+            tiempo: Double,
+            colorPrincipal: Int
+        ) {
+            val numBarras = 24
+            val anchoTotal = w * 0.84f
+            val inicioX = (w - anchoTotal) / 2f
+            val baseY = h - 46f
+            val anchoBarra = (anchoTotal / numBarras) * 0.65f
+            val paso = anchoTotal / numBarras
+
+            paintBarraSpec.color = colorPrincipal
+            for (i in 0 until numBarras) {
+                val factorActividad = when {
+                    estaHablando -> 0.55f + (sin(tiempo * 16.0 + i * 0.7).toFloat() * 0.45f)
+                    nivelVozUsuario > 0.5f -> (nivelVozUsuario / 12f) * (0.5f + sin(tiempo * 12.0 + i).toFloat() * 0.5f)
+                    else -> 0.12f + (sin(tiempo * 3.0 + i * 0.4).toFloat() * 0.08f)
+                }
+                val altura = (44f * factorActividad.coerceIn(0.08f, 1.0f))
+                val x = inicioX + i * paso
+                val rect = RectF(x, baseY - altura, x + anchoBarra, baseY)
+                paintBarraSpec.alpha = (130 + (factorActividad * 125)).toInt().coerceIn(90, 255)
+                canvas.drawRoundRect(rect, 3f, 3f, paintBarraSpec)
+            }
+
+            // Línea de telemetría inferior
+            val runtime = Runtime.getRuntime()
+            val ramUsadaMb = (runtime.totalMemory() - runtime.freeMemory()) / (1024 * 1024)
+            val hz = if (estaHablando) "480 HZ" else if (nivelVozUsuario > 0.5f) "220 HZ" else "60 HZ"
+
+            paintTexto.textSize = 19f
+            paintTexto.isFakeBoldText = true
+            paintTexto.color = Color.parseColor("#7FA8C9")
+            paintTexto.textAlign = Paint.Align.LEFT
+            canvas.drawText("FREQ:$hz  RAM:${ramUsadaMb}MB", 20f, h - 14f, paintTexto)
+
+            paintTexto.textAlign = Paint.Align.RIGHT
+            paintTexto.color = colorPrincipal
+            canvas.drawText("MODE:$modoMotor", w - 20f, h - 14f, paintTexto)
         }
     }
 }
