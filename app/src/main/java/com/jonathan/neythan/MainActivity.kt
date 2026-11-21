@@ -2,6 +2,8 @@ package com.jonathan.neythan
 
 import android.Manifest
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -10,18 +12,17 @@ import android.graphics.Color
 import android.graphics.DashPathEffect
 import android.graphics.Paint
 import android.graphics.RadialGradient
-import android.graphics.RectF
 import android.graphics.Shader
 import android.graphics.Typeface
-import android.media.AudioAttributes
-import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
+import android.provider.DocumentsContract
 import android.provider.Settings
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
@@ -31,7 +32,6 @@ import android.speech.tts.UtteranceProgressListener
 import android.text.InputType
 import android.util.TypedValue
 import android.view.Gravity
-import android.view.KeyEvent
 import android.view.View
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
@@ -50,7 +50,6 @@ import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import java.util.TimeZone
 import kotlin.concurrent.thread
 import kotlin.math.cos
 import kotlin.math.sin
@@ -60,16 +59,31 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     companion object {
         const val SERVER_URL = ""
-        const val GITHUB_REPO = "jonathancaballerojuegos-design/NeythanAndroidapp"
+        const val GITHUB_OWNER = "jonathancaballerojuegos-design"
+        const val GITHUB_REPO_NAME = "NeythanAndroidapp"
+        const val GITHUB_REPO = "$GITHUB_OWNER/$GITHUB_REPO_NAME"
         private const val REQ_PERMISOS = 1001
+        private const val REQ_SELECCIONAR_CARPETA = 1002
         private const val PREFS_NAME = "neythan_prefs"
     }
+
+    data class ArchivoIndexadoIA(
+        val nombre: String,
+        val rutaOuri: String,
+        val uri: Uri?,
+        val mimeType: String,
+        val tamanoKb: Long,
+        val fechaModificacion: Long,
+        val extractoTexto: String
+    )
 
     private lateinit var hudView: NeythanGeodesicHudView
     private lateinit var txtConsola: TextView
     private lateinit var scrollConsola: ScrollView
     private lateinit var inputComando: EditText
     private lateinit var btnMicrofono: Button
+    private lateinit var panelAlertaSupervisor: LinearLayout
+    private lateinit var txtAlertaSupervisor: TextView
 
     private var speechRecognizer: SpeechRecognizer? = null
     private var tts: TextToSpeech? = null
@@ -77,8 +91,9 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private var estadoActual = "ESCUCHANDO"
-    private var modoMotor = "GEMINI-FLASH"
+    private var modoMotor = "GEMINI-DIRECTO"
     private var nivelVozUsuario = 0f
+    private var pulsoSilabaVoz = 0f
     private var estaHablando = false
     private var escuchandoEnCurso = false
     private var escuchaActiva = true
@@ -98,12 +113,17 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private var nucleoTactico4Proactivo = false
     private var nucleoTactico5Supervisor = false
 
-    private var modeloGeminiDetectado: String? = null
+    private var modeloGeminiDetectado: String? = "gemini-2.5-flash"
     private val historialTurnos = ArrayList<Pair<String, String>>()
     private val consolaBuffer = StringBuilder()
 
+    // Estado de Supervisión y Notas
     private var falloPendienteDetalle: String? = null
     private var esperandoPermisoReporte = false
+
+    // Índice local del Gestor de Archivos con IA
+    private val indiceArchivosIA = ArrayList<ArchivoIndexadoIA>()
+    private var ultimoArchivoEncontrado: ArchivoIndexadoIA? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -115,12 +135,12 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         iniciarMotorVoz()
         verificarPermisosYArrancar()
         iniciarBucleAnimacion()
+        indexarArchivosDispositivoSilencioso()
         auditarCompilacionesGithubSilencioso()
     }
 
     override fun onResume() {
         super.onResume()
-        // Pausamos el servicio secundario para evitar doble micrófono y pitidos simultáneos
         try {
             stopService(Intent(this, NeythanBackgroundService::class.java))
         } catch (_: Exception) {
@@ -134,10 +154,26 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         super.onPause()
         detenerEscuchaTemporal()
         restaurarTonosSistema()
-        // Reactivamos el servicio de segundo plano solo al salir de la pantalla
         if (escuchaActiva) {
             iniciarServiciosPersistentes()
         }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        mainHandler.removeCallbacksAndMessages(null)
+        try {
+            speechRecognizer?.destroy()
+            speechRecognizer = null
+        } catch (_: Exception) {
+        }
+        try {
+            tts?.stop()
+            tts?.shutdown()
+            tts = null
+        } catch (_: Exception) {
+        }
+        restaurarTonosSistema()
     }
 
     private fun construirInterfazHud() {
@@ -147,11 +183,59 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             setPadding(dp(12), dp(10), dp(12), dp(10))
         }
 
+        // Banner táctico de NeythanSupervisor (oculto hasta detectar anomalías)
+        panelAlertaSupervisor = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.parseColor("#2A0A14"))
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+            visibility = View.GONE
+        }
+        txtAlertaSupervisor = TextView(this).apply {
+            setTextColor(Color.parseColor("#FF8A9B"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
+            typeface = Typeface.MONOSPACE
+        }
+        val filaBotonesSup = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(6), 0, 0)
+        }
+        val btnAutorizarSup = Button(this).apply {
+            text = "AUTORIZAR Y GUARDAR EN NOTAS"
+            setTextColor(Color.parseColor("#040810"))
+            setBackgroundColor(Color.parseColor("#FF5268"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
+            typeface = Typeface.MONOSPACE
+            setOnClickListener {
+                panelAlertaSupervisor.visibility = View.GONE
+                ejecutarDiagnosticoYGuardarEnNotas()
+            }
+        }
+        val btnPosponerSup = Button(this).apply {
+            text = "POSPONER"
+            setTextColor(Color.parseColor("#D8F3FF"))
+            setBackgroundColor(Color.parseColor("#1B2838"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
+            typeface = Typeface.MONOSPACE
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(dp(8), 0, 0, 0) }
+            setOnClickListener {
+                panelAlertaSupervisor.visibility = View.GONE
+                esperandoPermisoReporte = false
+            }
+        }
+        filaBotonesSup.addView(btnAutorizarSup)
+        filaBotonesSup.addView(btnPosponerSup)
+        panelAlertaSupervisor.addView(txtAlertaSupervisor)
+        panelAlertaSupervisor.addView(filaBotonesSup)
+        root.addView(panelAlertaSupervisor)
+
         hudView = NeythanGeodesicHudView(this)
         val paramsHud = LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             0,
-            1.35f
+            1.32f
         )
         root.addView(hudView, paramsHud)
 
@@ -159,15 +243,33 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setBackgroundColor(Color.parseColor("#0A1322"))
-            setPadding(dp(12), dp(6), dp(12), dp(6))
+            setPadding(dp(10), dp(6), dp(10), dp(6))
         }
 
         val lblTituloConsola = TextView(this).apply {
-            text = "CONSOLA NEURONAL DE INTERACCIÓN"
+            text = "CONSOLA NEURONAL + GESTOR IA"
             setTextColor(Color.parseColor("#4CE8FF"))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
             typeface = Typeface.MONOSPACE
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+
+        val btnArchivosIA = Button(this).apply {
+            text = "ARCHIVOS IA"
+            setTextColor(Color.parseColor("#00E676"))
+            setBackgroundColor(Color.parseColor("#102A24"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
+            typeface = Typeface.MONOSPACE
+            setPadding(dp(8), dp(2), dp(8), dp(2))
+            minimumHeight = 0
+            minHeight = 0
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(0, 0, dp(6), 0) }
+            setOnClickListener {
+                abrirSelectorCarpetaIA()
+            }
         }
 
         val btnLimpiar = Button(this).apply {
@@ -176,17 +278,17 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             setBackgroundColor(Color.parseColor("#102038"))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
             typeface = Typeface.MONOSPACE
-            setPadding(dp(10), dp(2), dp(10), dp(2))
+            setPadding(dp(8), dp(2), dp(8), dp(2))
             minimumHeight = 0
             minHeight = 0
             setOnClickListener {
                 consolaBuffer.clear()
                 txtConsola.text = ""
-                agregarMensajeConsola("N.E.Y.T.H.A.N.", "Consola despejada, señor. Núcleos listos.")
+                agregarMensajeConsola("N.E.Y.T.H.A.N.", "Consola despejada, señor. Núcleos y gestor IA listos.")
             }
         }
-
         headerConsola.addView(lblTituloConsola)
+        headerConsola.addView(btnArchivosIA)
         headerConsola.addView(btnLimpiar)
         root.addView(headerConsola)
 
@@ -201,11 +303,10 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             setLineSpacing(4f, 1.15f)
         }
         scrollConsola.addView(txtConsola)
-
         val paramsConsola = LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             0,
-            0.85f
+            0.88f
         )
         root.addView(scrollConsola, paramsConsola)
 
@@ -215,7 +316,6 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             setBackgroundColor(Color.parseColor("#0A1322"))
             setPadding(dp(8), dp(6), dp(8), dp(6))
         }
-
         btnMicrofono = Button(this).apply {
             text = "🎙"
             setTextColor(Color.parseColor("#00F0FF"))
@@ -236,9 +336,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 }
             }
         }
-
         inputComando = EditText(this).apply {
-            hint = "Escriba una orden para Neythan..."
+            hint = "Orden, consulta o búsqueda de archivo..."
             setHintTextColor(Color.parseColor("#4A6B88"))
             setTextColor(Color.WHITE)
             setBackgroundColor(Color.parseColor("#0E1B2E"))
@@ -260,7 +359,6 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 }
             }
         }
-
         val btnEnviar = Button(this).apply {
             text = "➤"
             setTextColor(Color.parseColor("#040810"))
@@ -268,12 +366,10 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
             setOnClickListener { enviarTextoDesdeCaja() }
         }
-
         barraEntrada.addView(btnMicrofono)
         barraEntrada.addView(inputComando)
         barraEntrada.addView(btnEnviar)
         root.addView(barraEntrada)
-
         setContentView(root)
     }
 
@@ -288,11 +384,13 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     private fun agregarMensajeConsola(emisor: String, mensaje: String) {
         mainHandler.post {
-            if (consolaBuffer.length > 4000) {
-                consolaBuffer.delete(0, 1500)
+            if (consolaBuffer.length > 8000) {
+                consolaBuffer.delete(0, 2500)
             }
             if (consolaBuffer.isNotEmpty()) {
-                consolaBuffer.append("\n\n")
+                consolaBuffer.append("
+
+")
             }
             consolaBuffer.append("[$emisor]: $mensaje")
             txtConsola.text = consolaBuffer.toString()
@@ -302,7 +400,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         }
     }
 
-    private fun activarNucleoTactico(indice: Int, duracionMs: Long = 4500L) {
+    private fun activarNucleoTactico(indice: Int, duracionMs: Long = 5000L) {
         mainHandler.post {
             when (indice) {
                 1 -> nucleoTactico1Cognitivo = true
@@ -373,18 +471,27 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 override fun onStart(utteranceId: String?) {
                     mainHandler.post {
                         estaHablando = true
+                        pulsoSilabaVoz = 0.85f
                         detenerEscuchaTemporal()
                         estadoActual = "HABLANDO"
+                    }
+                }
+
+                override fun onRangeStart(utteranceId: String?, start: Int, end: Int, frame: Int) {
+                    val longitudPalabra = (end - start).coerceIn(1, 14)
+                    val energia = (0.45f + (longitudPalabra / 14f) * 0.55f).coerceIn(0.4f, 1.0f)
+                    mainHandler.post {
+                        pulsoSilabaVoz = energia
                     }
                 }
 
                 override fun onDone(utteranceId: String?) {
                     mainHandler.post {
                         estaHablando = false
+                        pulsoSilabaVoz = 0f
                         estadoActual = if (escuchaActiva) "ESCUCHANDO" else "PAUSADO"
                         conversacionActivaHasta = System.currentTimeMillis() + 22000L
                         backoffEscuchaMs = 1500L
-                        // Pausa de 1.3s tras hablar para evitar captar eco residual
                         if (escuchaActiva) reanudarEscucha(1300L)
                     }
                 }
@@ -393,6 +500,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 override fun onError(utteranceId: String?) {
                     mainHandler.post {
                         estaHablando = false
+                        pulsoSilabaVoz = 0f
                         estadoActual = if (escuchaActiva) "ESCUCHANDO" else "PAUSADO"
                         if (escuchaActiva) reanudarEscucha(1500L)
                     }
@@ -411,21 +519,18 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val ultimoIndice = prefs.getInt("ultimo_saludo_idx", -1)
         val hora = SimpleDateFormat("HH", Locale.getDefault()).format(Date()).toIntOrNull() ?: 12
-
         val franja = when (hora) {
             in 5..11 -> "Buenos días, señor."
             in 12..18 -> "Buenas tardes, señor."
             in 19..23 -> "Buenas noches, señor."
             else -> "Trabajando en turno nocturno, señor."
         }
-
         val variantes = listOf(
-            "$franja Los dos núcleos básicos y cinco núcleos tácticos están operativos. ¿Qué misión iniciamos?",
-            "$franja Núcleo geodésico estabilizado y enlace directo listo. Estoy atento a sus instrucciones.",
-            "$franja Todos los sistemas sensoriales y cognitivos en línea. ¿En qué puedo asistirle hoy?",
-            "$franja Vigilancia activa y canales despejados. Dígame cómo procedemos."
+            "$franja Los dos núcleos básicos, cinco núcleos tácticos y el enlace directo a Gemini están operativos. ¿Qué misión iniciamos?",
+            "$franja Núcleo geodésico estabilizado, supervisor activo y conexión directa con Gemini lista. Estoy atento a sus instrucciones.",
+            "$franja Todos los sistemas sensoriales, documentales y cognitivos en línea. ¿En qué puedo asistirle hoy?",
+            "$franja Vigilancia activa y enlace directo despejado. Dígame cómo procedemos."
         )
-
         var nuevoIdx = Random.nextInt(variantes.size)
         if (nuevoIdx == ultimoIndice && variantes.size > 1) {
             nuevoIdx = (nuevoIdx + 1) % variantes.size
@@ -435,11 +540,20 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     }
 
     private fun verificarPermisosYArrancar() {
+        val permisosSolicitar = ArrayList<String>()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-                requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQ_PERMISOS)
-                return
+                permisosSolicitar.add(Manifest.permission.RECORD_AUDIO)
             }
+            if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.S_V2 &&
+                checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED
+            ) {
+                permisosSolicitar.add(Manifest.permission.READ_EXTERNAL_STORAGE)
+            }
+        }
+        if (permisosSolicitar.isNotEmpty()) {
+            requestPermissions(permisosSolicitar.toTypedArray(), REQ_PERMISOS)
+            return
         }
         solicitarExencionBateria()
         reanudarEscucha(1500L)
@@ -451,12 +565,34 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        val concedido = grantResults.any { it == PackageManager.PERMISSION_GRANTED }
-        if (requestCode == REQ_PERMISOS && concedido) {
-            solicitarExencionBateria()
-            reanudarEscucha(1000L)
-        } else {
-            agregarMensajeConsola("N.E.Y.T.H.A.N.", "Permiso de micrófono requerido para la escucha continua, señor.")
+        if (requestCode == REQ_PERMISOS) {
+            indexarArchivosDispositivoSilencioso()
+            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                solicitarExencionBateria()
+                reanudarEscucha(1000L)
+            } else {
+                agregarMensajeConsola("N.E.Y.T.H.A.N.", "Permiso de micrófono requerido para la escucha continua, señor.")
+            }
+        }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQ_SELECCIONAR_CARPETA && resultCode == RESULT_OK) {
+            val treeUri = data?.data ?: return
+            try {
+                contentResolver.takePersistableUriPermission(
+                    treeUri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                )
+            } catch (_: Exception) {
+            }
+            getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putString("carpeta_ia_uri", treeUri.toString())
+                .apply()
+            activarNucleoTactico(3, 5000L)
+            indexarCarpetaSAF(treeUri)
         }
     }
 
@@ -520,7 +656,6 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                     nivelVozUsuario = 0f
                     escuchandoEnCurso = false
                     if (!estaHablando && escuchaActiva) {
-                        // Evita el bucle rápido de pitidos cuando hay silencio
                         backoffEscuchaMs = (backoffEscuchaMs + 600L).coerceAtMost(3500L)
                         reanudarEscucha(backoffEscuchaMs)
                     }
@@ -572,434 +707,31 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             speechRecognizer?.startListening(intent)
         } catch (_: Exception) {
             escuchandoEnCurso = false
-            configurarReconocedor()
-            reanudarEscucha(2200L)
+            if (escuchaActiva) reanudarEscucha(2500L)
         }
     }
 
     private fun detenerEscuchaTemporal() {
         mainHandler.removeCallbacks(tareaEscucha)
+        try {
+            if (escuchandoEnCurso) {
+                speechRecognizer?.stopListening()
+                speechRecognizer?.cancel()
+            }
+        } catch (_: Exception) {
+        }
         escuchandoEnCurso = false
-        try {
-            speechRecognizer?.stopListening()
-            speechRecognizer?.cancel()
-        } catch (_: Exception) {
-        }
-    }
-
-    private fun procesarTextoCapturado(textoRaw: String) {
-        val limpio = textoRaw.trim()
-        val lower = limpio.lowercase(Locale.getDefault())
-        val palabrasClave = listOf("neythan", "nathan", "neitan", "natan", "neytan", "naytan", "despierta")
-        val contieneWakeWord = palabrasClave.any { lower.contains(it) }
-        val enVentanaActiva = System.currentTimeMillis() < conversacionActivaHasta
-
-        if (!contieneWakeWord && !enVentanaActiva) {
-            if (escuchaActiva) reanudarEscucha(1500L)
-            return
-        }
-
-        var orden = limpio
-        for (w in palabrasClave) {
-            orden = orden.replace(Regex("(?i)\\b$w\\b[,:]?"), "").trim()
-        }
-
-        if (orden.isEmpty()) {
-            hablar("A sus órdenes, señor. ¿Qué necesita?")
-            return
-        }
-
-        procesarOrdenDirecta(orden)
-    }
-
-    private fun procesarOrdenDirecta(orden: String) {
-        detenerEscuchaTemporal()
-        agregarMensajeConsola("Tú", orden)
-        estadoActual = "PROCESANDO"
-        val lower = orden.lowercase(Locale.getDefault())
-
-        if (esperandoPermisoReporte && falloPendienteDetalle != null) {
-            if (lower.contains("sí") || lower.contains("si") || lower.contains("autorizo") ||
-                lower.contains("adelante") || lower.contains("dime") || lower.contains("revisa")
-            ) {
-                esperandoPermisoReporte = false
-                val detalle = falloPendienteDetalle ?: "Sin detalles adicionales."
-                falloPendienteDetalle = null
-                activarNucleoTactico(5, 6000L)
-                hablar("Autorización recibida, señor. $detalle")
-                return
-            } else if (lower.contains("no") || lower.contains("luego") || lower.contains("cancela")) {
-                esperandoPermisoReporte = false
-                falloPendienteDetalle = null
-                hablar("Entendido, señor. Mantengo el registro en silencio.")
-                return
-            }
-        }
-
-        if (ejecutarComandoLocalSiAplica(orden)) {
-            return
-        }
-
-        consultarGeminiDirecto(orden)
-    }
-
-    private fun ejecutarComandoLocalSiAplica(orden: String): Boolean {
-        val lower = orden.lowercase(Locale.getDefault())
-
-        if (lower.contains("qué hora") || lower.contains("que hora") || lower.contains("dime la hora") || lower == "hora") {
-            activarNucleoTactico(4, 3000L)
-            val horaFmt = SimpleDateFormat("hh:mm a", Locale("es", "MX")).format(Date())
-            hablar("Son exactamente las $horaFmt, señor.")
-            return true
-        }
-
-        if (lower.contains("qué fecha") || lower.contains("que fecha") || lower.contains("qué día es") || lower.contains("que dia es")) {
-            activarNucleoTactico(4, 3000L)
-            val fechaFmt = SimpleDateFormat("EEEE d 'de' MMMM 'de' yyyy", Locale("es", "MX")).format(Date())
-            hablar("Hoy es $fechaFmt, señor.")
-            return true
-        }
-
-        if (lower.contains("pausa") || lower.contains("detén la música") || lower.contains("deten la musica")) {
-            activarNucleoTactico(3, 3500L)
-            enviarEventoMultimedia(KeyEvent.KEYCODE_MEDIA_PAUSE)
-            hablar("Reproducción pausada, señor.")
-            return true
-        }
-
-        if (lower.contains("siguiente canción") || lower.contains("siguiente cancion") || lower.contains("cambia de canción")) {
-            activarNucleoTactico(3, 3500L)
-            enviarEventoMultimedia(KeyEvent.KEYCODE_MEDIA_NEXT)
-            hablar("Siguiente pista, señor.")
-            return true
-        }
-
-        if (lower.contains("canción anterior") || lower.contains("cancion anterior")) {
-            activarNucleoTactico(3, 3500L)
-            enviarEventoMultimedia(KeyEvent.KEYCODE_MEDIA_PREVIOUS)
-            hablar("Regresando a la pista anterior, señor.")
-            return true
-        }
-
-        if (lower.contains("spotify") || lower.contains("pon música") || lower.contains("pon musica") ||
-            lower.contains("reproduce") || lower.contains("pon ")
-        ) {
-            val consulta = lower
-                .replace("en spotify", "")
-                .replace("spotify", "")
-                .replace("reproduce", "")
-                .replace("pon música de", "")
-                .replace("pon musica de", "")
-                .replace("pon música", "")
-                .replace("pon musica", "")
-                .replace("pon ", "")
-                .trim()
-
-            activarNucleoTactico(3, 5000L)
-            reproducirEnSpotifyAuto(consulta)
-            return true
-        }
-
-        if (lower.contains("estado de núcleos") || lower.contains("estado de nucleos") || lower.contains("diagnóstico")) {
-            activarNucleoTactico(5, 5000L)
-            hablar("Los dos núcleos básicos de voz y memoria operan al cien por ciento. Los cinco núcleos tácticos se encuentran en guardia listos para despliegue, señor.")
-            return true
-        }
-
-        return false
-    }
-
-    private fun reproducirEnSpotifyAuto(cancionOArtista: String) {
-        try {
-            val query = if (cancionOArtista.isNotEmpty()) cancionOArtista else "música electrónica"
-            val intentPlay = Intent("android.media.action.MEDIA_PLAY_FROM_SEARCH").apply {
-                setPackage("com.spotify.music")
-                putExtra("query", query)
-                putExtra(android.app.SearchManager.QUERY, query)
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            startActivity(intentPlay)
-
-            mainHandler.postDelayed({
-                enviarEventoMultimedia(KeyEvent.KEYCODE_MEDIA_PLAY)
-            }, 1800L)
-
-            hablar("Iniciando reproducción de $query en Spotify, señor.")
-        } catch (_: Exception) {
-            try {
-                val uri = Uri.parse("spotify:search:${Uri.encode(cancionOArtista)}")
-                startActivity(Intent(Intent.ACTION_VIEW, uri).apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                })
-                hablar("Abriendo $cancionOArtista en Spotify, señor.")
-            } catch (_: Exception) {
-                hablar("No encontré Spotify instalado en este dispositivo, señor.")
-            }
-        }
-    }
-
-    private fun enviarEventoMultimedia(keyCode: Int) {
-        try {
-            val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, keyCode))
-            am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, keyCode))
-        } catch (_: Exception) {
-        }
-    }
-
-    private fun obtenerClaveGemini(): String {
-        return try {
-            BuildConfig.GEMINI_API_KEY.trim()
-        } catch (_: Exception) {
-            ""
-        }
-    }
-
-    private fun obtenerFechaHoraExactaDispositivo(): String {
-        val sdf = SimpleDateFormat("EEEE dd/MM/yyyy HH:mm:ss", Locale("es", "MX"))
-        val tz = TimeZone.getDefault().id
-        return "${sdf.format(Date())} ($tz)"
-    }
-
-    private fun detectarMejorModeloFlash(apiKey: String): String {
-        modeloGeminiDetectado?.let { return it }
-        try {
-            val url = URL("https://generativelanguage.googleapis.com/v1beta/models?key=$apiKey")
-            val conn = (url.openConnection() as HttpURLConnection).apply {
-                requestMethod = "GET"
-                connectTimeout = 7000
-                readTimeout = 7000
-            }
-            if (conn.responseCode in 200..299) {
-                val body = BufferedReader(InputStreamReader(conn.inputStream, "UTF-8")).use { it.readText() }
-                val models = JSONObject(body).optJSONArray("models") ?: JSONArray()
-                val candidatos = ArrayList<String>()
-                for (i in 0 until models.length()) {
-                    val m = models.getJSONObject(i)
-                    val name = m.optString("name", "").removePrefix("models/")
-                    val methods = m.optJSONArray("supportedGenerationMethods")?.toString() ?: ""
-                    if (methods.contains("generateContent") &&
-                        name.contains("flash", ignoreCase = true) &&
-                        !name.contains("pro", ignoreCase = true) &&
-                        !name.contains("thinking", ignoreCase = true) &&
-                        !name.contains("image", ignoreCase = true) &&
-                        !name.contains("audio", ignoreCase = true)
-                    ) {
-                        candidatos.add(name)
-                    }
-                }
-                val elegido = candidatos.firstOrNull { it.contains("flash-lite") }
-                    ?: candidatos.firstOrNull { it.contains("2.5-flash") }
-                    ?: candidatos.firstOrNull()
-                if (elegido != null) {
-                    modeloGeminiDetectado = elegido
-                    modoMotor = elegido.uppercase(Locale.getDefault())
-                    return elegido
-                }
-            }
-            conn.disconnect()
-        } catch (_: Exception) {
-        }
-        return "gemini-2.5-flash-lite"
-    }
-
-    private fun consultarGeminiDirecto(mensajeUsuario: String) {
-        activarNucleoTactico(1, 6000L)
-        thread {
-            val apiKey = obtenerClaveGemini()
-            if (apiKey.isEmpty() || apiKey.contains("PON_AQUI")) {
-                mainHandler.post {
-                    hablar("La clave de Gemini aún no está configurada en el secreto de compilación, señor.")
-                }
-                return@thread
-            }
-
-            try {
-                val modelo = detectarMejorModeloFlash(apiKey)
-                val url = URL("https://generativelanguage.googleapis.com/v1beta/models/$modelo:generateContent?key=$apiKey")
-                val conn = (url.openConnection() as HttpURLConnection).apply {
-                    requestMethod = "POST"
-                    setRequestProperty("Content-Type", "application/json; charset=UTF-8")
-                    connectTimeout = 10000
-                    readTimeout = 16000
-                    doOutput = true
-                }
-
-                val horaActual = obtenerFechaHoraExactaDispositivo()
-                val instruccionSistema = """
-                    Eres NEYTHAN, un asistente táctico inteligente integrado de forma nativa en el teléfono Android del usuario, inspirado en J.A.R.V.I.S.
-                    Tratas al usuario con respeto como "señor".
-                    Conciencia propia: sabes que eres esta aplicación Android con interfaz HUD geodésica 3D, 2 núcleos básicos (Voz/Sensor y Memoria) y 5 núcleos tácticos (Cognitivo, Visión, Ejecución, Proactivo y Supervisor). Si el señor reporta un fallo de audio, micrófono o interfaz, analiza tus propios módulos Android.
-                    Fecha y hora real exacta del dispositivo: $horaActual. Nunca inventes una hora distinta.
-                    Responde en español de forma clara, completa, natural y concisa (máximo 3 oraciones bien terminadas).
-                """.trimIndent()
-
-                val contentsArray = JSONArray()
-                for ((rol, texto) in historialTurnos.takeLast(6)) {
-                    val part = JSONObject().put("text", texto)
-                    val content = JSONObject()
-                        .put("role", rol)
-                        .put("parts", JSONArray().put(part))
-                    contentsArray.put(content)
-                }
-
-                val userPart = JSONObject().put("text", mensajeUsuario)
-                contentsArray.put(
-                    JSONObject()
-                        .put("role", "user")
-                        .put("parts", JSONArray().put(userPart))
-                )
-
-                val genConfig = JSONObject()
-                    .put("temperature", 0.7)
-                    .put("maxOutputTokens", 1200)
-
-                val payload = JSONObject()
-                    .put("system_instruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", instruccionSistema))))
-                    .put("contents", contentsArray)
-                    .put("generationConfig", genConfig)
-
-                OutputStreamWriter(conn.outputStream, "UTF-8").use {
-                    it.write(payload.toString())
-                    it.flush()
-                }
-
-                val code = conn.responseCode
-                if (code in 200..299) {
-                    val respText = BufferedReader(InputStreamReader(conn.inputStream, "UTF-8")).use { it.readText() }
-                    val jsonResp = JSONObject(respText)
-                    val candidates = jsonResp.optJSONArray("candidates")
-                    val sbRespuesta = StringBuilder()
-                    if (candidates != null && candidates.length() > 0) {
-                        val parts = candidates.getJSONObject(0)
-                            .optJSONObject("content")
-                            ?.optJSONArray("parts")
-                        if (parts != null) {
-                            for (i in 0 until parts.length()) {
-                                sbRespuesta.append(parts.getJSONObject(i).optString("text", ""))
-                            }
-                        }
-                    }
-
-                    val respuestaLimpia = sbRespuesta.toString().replace("*", "").trim()
-                    if (respuestaLimpia.isNotEmpty()) {
-                        historialTurnos.add(Pair("user", mensajeUsuario))
-                        historialTurnos.add(Pair("model", respuestaLimpia))
-                        mainHandler.post {
-                            hablar(respuestaLimpia)
-                        }
-                    } else {
-                        mainHandler.post {
-                            hablar("Procesado, señor. ¿Desea ampliar algún punto?")
-                        }
-                    }
-                } else {
-                    modeloGeminiDetectado = null
-                    registrarFalloParaSupervision("El motor cognitivo devolvió código HTTP $code.")
-                    mainHandler.post {
-                        hablar("Detecté una intermitencia en el enlace cognitivo, señor. ¿Me autoriza a darle el diagnóstico?")
-                    }
-                }
-                conn.disconnect()
-            } catch (e: Exception) {
-                registrarFalloParaSupervision("Excepción de red: ${e.javaClass.simpleName}.")
-                mainHandler.post {
-                    hablar("El enlace externo presenta latencia en este momento, señor. Mis núcleos básicos siguen operando.")
-                }
-            }
-        }
-    }
-
-    private fun registrarFalloParaSupervision(detalle: String) {
-        falloPendienteDetalle = detalle
-        esperandoPermisoReporte = true
-        activarNucleoTactico(5, 5000L)
-    }
-
-    private fun auditarCompilacionesGithubSilencioso() {
-        thread {
-            try {
-                val url = URL("https://api.github.com/repos/$GITHUB_REPO/actions/runs?per_page=1")
-                val conn = (url.openConnection() as HttpURLConnection).apply {
-                    requestMethod = "GET"
-                    setRequestProperty("Accept", "application/vnd.github+json")
-                    setRequestProperty("User-Agent", "NeythanAndroidHUD")
-                    connectTimeout = 6000
-                    readTimeout = 6000
-                }
-                if (conn.responseCode in 200..299) {
-                    val body = BufferedReader(InputStreamReader(conn.inputStream, "UTF-8")).use { it.readText() }
-                    val runs = JSONObject(body).optJSONArray("workflow_runs")
-                    if (runs != null && runs.length() > 0) {
-                        val ultimo = runs.getJSONObject(0)
-                        val runId = ultimo.optLong("id", 0L)
-                        val conclusion = ultimo.optString("conclusion", "")
-                        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                        val ultimoReportado = prefs.getLong("ultimo_run_fallido", 0L)
-
-                        if (conclusion == "failure" && runId != ultimoReportado) {
-                            prefs.edit().putLong("ultimo_run_fallido", runId).apply()
-                            falloPendienteDetalle = "La compilación número $runId en GitHub Actions finalizó con error de construcción."
-                            esperandoPermisoReporte = true
-                            activarNucleoTactico(5, 6000L)
-                            mainHandler.postDelayed({
-                                if (!estaHablando) {
-                                    hablar("Señor, detecté una anomalía en la última compilación de GitHub. ¿Me autoriza a informarle los detalles?")
-                                }
-                            }, 5500L)
-                        }
-                    }
-                }
-                conn.disconnect()
-            } catch (_: Exception) {
-            }
-        }
+        nivelVozUsuario = 0f
     }
 
     private fun hablar(texto: String) {
-        detenerEscuchaTemporal()
-        estaHablando = true
         agregarMensajeConsola("N.E.Y.T.H.A.N.", texto)
-        estadoActual = "HABLANDO"
-        solicitarFocoAudioMultimedia()
-
         if (ttsListo && tts != null) {
-            val params = Bundle().apply {
-                putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_MUSIC)
-            }
-            tts?.speak(texto, TextToSpeech.QUEUE_FLUSH, params, "NEYTHAN_HUD_MSG")
+            val params = Bundle()
+            tts?.speak(texto, TextToSpeech.QUEUE_FLUSH, params, "NEYTHAN_UTTERANCE")
         } else {
-            estaHablando = false
-            estadoActual = if (escuchaActiva) "ESCUCHANDO" else "PAUSADO"
             if (escuchaActiva) reanudarEscucha(1500L)
         }
-    }
-
-    private fun solicitarFocoAudioMultimedia() {
-        try {
-            val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                val focusReq = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
-                    .setAudioAttributes(
-                        AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_ASSISTANT)
-                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                            .build()
-                    )
-                    .build()
-                audioManager.requestAudioFocus(focusReq)
-            }
-        } catch (_: Exception) {
-        }
-    }
-
-    private fun iniciarBucleAnimacion() {
-        mainHandler.post(object : Runnable {
-            override fun run() {
-                hudView.invalidate()
-                mainHandler.postDelayed(this, 33L)
-            }
-        })
     }
 
     private fun dp(valor: Int): Int {
@@ -1010,250 +742,403 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         ).toInt()
     }
 
-    override fun onDestroy() {
-        detenerEscuchaTemporal()
-        restaurarTonosSistema()
-        try {
-            speechRecognizer?.destroy()
-            tts?.stop()
-            tts?.shutdown()
+    // =========================================================================
+    // CONEXIÓN DIRECTA CON LA API DE GEMINI (SIN RENDER)
+    // =========================================================================
+
+    private fun obtenerClaveGeminiSegura(): String {
+        return try {
+            val field = BuildConfig::class.java.getDeclaredField("GEMINI_API_KEY")
+            (field.get(null) as? String)?.trim() ?: ""
         } catch (_: Exception) {
+            getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .getString("gemini_api_key_local", "") ?: ""
         }
-        super.onDestroy()
     }
 
-    inner class NeythanGeodesicHudView(context: Context) : View(context) {
-        private val paintFondo = Paint(Paint.ANTI_ALIAS_FLAG)
-        private val paintLinea = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.STROKE
-            strokeWidth = 2.2f
+    private fun consultarGeminiDirecto(promptUsuario: String) {
+        val apiKey = obtenerClaveGeminiSegura()
+        if (apiKey.isEmpty()) {
+            hablar("Señor, el enlace directo está listo, pero BuildConfig.GEMINI_API_KEY llegó vacío en esta compilación. Verifique el workflow de GitHub Actions.")
+            return
         }
-        private val paintAnilloDash = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.STROKE
-            strokeWidth = 2.5f
-            pathEffect = DashPathEffect(floatArrayOf(18f, 12f), 0f)
+
+        mainHandler.post { estadoActual = "PROCESANDO" }
+        activarNucleoTactico(1, 7000L)
+
+        thread {
+            try {
+                val modelo = modeloGeminiDetectado ?: "gemini-2.5-flash"
+                val endpoint = "https://generativelanguage.googleapis.com/v1beta/models/$modelo:generateContent?key=$apiKey"
+                val url = URL(endpoint)
+                val conn = (url.openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+                    connectTimeout = 15000
+                    readTimeout = 25000
+                    doOutput = true
+                }
+
+                val contentsArray = JSONArray()
+
+                // Instrucción de identidad en el primer turno
+                val systemPart = JSONObject().put(
+                    "text",
+                    "Eres N.E.Y.T.H.A.N., un asistente táctico personal con estilo formal, directo y eficiente tipo J.A.R.V.I.S. Dirígete al usuario como 'señor'. Responde en español de forma clara y concisa para lectura en voz alta."
+                )
+                contentsArray.put(
+                    JSONObject()
+                        .put("role", "user")
+                        .put("parts", JSONArray().put(systemPart))
+                )
+                contentsArray.put(
+                    JSONObject()
+                        .put("role", "model")
+                        .put("parts", JSONArray().put(JSONObject().put("text", "Entendido, señor. Todos los sistemas operativos.")))
+                )
+
+                for ((rol, texto) in historialTurnos) {
+                    val geminiRole = if (rol == "user") "user" else "model"
+                    contentsArray.put(
+                        JSONObject()
+                            .put("role", geminiRole)
+                            .put("parts", JSONArray().put(JSONObject().put("text", texto)))
+                    )
+                }
+
+                contentsArray.put(
+                    JSONObject()
+                        .put("role", "user")
+                        .put("parts", JSONArray().put(JSONObject().put("text", promptUsuario)))
+                )
+
+                val bodyJson = JSONObject().put("contents", contentsArray)
+
+                OutputStreamWriter(conn.outputStream, "UTF-8").use { writer ->
+                    writer.write(bodyJson.toString())
+                    writer.flush()
+                }
+
+                val code = conn.responseCode
+                val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+                val respuestaCruda = BufferedReader(InputStreamReader(stream, "UTF-8")).use { it.readText() }
+
+                if (code in 200..299) {
+                    val jsonResp = JSONObject(respuestaCruda)
+                    val candidates = jsonResp.optJSONArray("candidates")
+                    val textoIa = candidates
+                        ?.optJSONObject(0)
+                        ?.optJSONObject("content")
+                        ?.optJSONArray("parts")
+                        ?.optJSONObject(0)
+                        ?.optString("text", "")
+                        ?.replace("*", "")
+                        ?.trim() ?: ""
+
+                    if (textoIa.isNotEmpty()) {
+                        historialTurnos.add(Pair("user", promptUsuario))
+                        historialTurnos.add(Pair("model", textoIa))
+                        while (historialTurnos.size > 14) {
+                            historialTurnos.removeAt(0)
+                        }
+                        hablar(textoIa)
+                    } else {
+                        hablar("Recibí una respuesta vacía del núcleo cognitivo, señor.")
+                    }
+                } else {
+                    mainHandler.post { estadoActual = if (escuchaActiva) "ESCUCHANDO" else "PAUSADO" }
+                    hablar("El enlace directo con Gemini devolvió código $code, señor. Revise la consola para más detalles.")
+                    agregarMensajeConsola("SUPERVISOR", "HTTP $code: ${respuestaCruda.take(300)}")
+                }
+            } catch (e: Exception) {
+                mainHandler.post { estadoActual = if (escuchaActiva) "ESCUCHANDO" else "PAUSADO" }
+                hablar("Error de red al conectar directamente con Gemini, señor: ${e.message}")
+            }
         }
-        private val paintNodo = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    }
+
+    // =========================================================================
+    // PROCESAMIENTO DE VOZ, ÓRDENES, GESTOR DE ARCHIVOS Y HUD GEODÉSICO
+    // =========================================================================
+
+    private fun procesarTextoCapturado(textoCrudo: String) {
+        val limpio = textoCrudo.trim()
+        if (limpio.isEmpty()) {
+            if (escuchaActiva) reanudarEscucha(1200L)
+            return
+        }
+        val lower = limpio.lowercase(Locale.getDefault())
+        val dentroDeVentana = System.currentTimeMillis() < conversacionActivaHasta
+        val contieneWakeWord = lower.contains("neythan") || lower.contains("nathan") || lower.contains("despierta")
+
+        if (contieneWakeWord || dentroDeVentana) {
+            conversacionActivaHasta = System.currentTimeMillis() + 25000L
+            val orden = limpio
+                .replace(Regex("(?i)\b(neythan|nathan|despierta)\b[,:\s]*"), "")
+                .trim()
+            if (orden.isEmpty()) {
+                hablar("A sus órdenes, señor. Dígame.")
+            } else {
+                procesarOrdenDirecta(orden)
+            }
+        } else {
+            if (escuchaActiva) reanudarEscucha(1000L)
+        }
+    }
+
+    private fun procesarOrdenDirecta(orden: String) {
+        agregarMensajeConsola("SEÑOR", orden)
+        val lower = orden.lowercase(Locale.getDefault())
+
+        if (esperandoPermisoReporte && (lower.contains("autorizo") || lower.contains("sí") || lower.contains("si") || lower.contains("guarda"))) {
+            panelAlertaSupervisor.visibility = View.GONE
+            ejecutarDiagnosticoYGuardarEnNotas()
+            return
+        }
+
+        if (lower.contains("buscar archivo") || lower.contains("busca archivo") || lower.contains("abrir archivo")) {
+            activarNucleoTactico(3, 4500L)
+            val consulta = orden.replace(Regex("(?i)(buscar|busca|abrir)\s+archivo\s*"), "").trim()
+            buscarEnIndiceArchivos(consulta)
+            return
+        }
+
+        // Enviar directamente a Gemini API (sin pasar por Render)
+        consultarGeminiDirecto(orden)
+    }
+
+    private fun iniciarBucleAnimacion() {
+        val runnableAnim = object : Runnable {
+            override fun run() {
+                if (::hudView.isInitialized) {
+                    hudView.actualizarPulso(
+                        nivelVozUsuario,
+                        pulsoSilabaVoz,
+                        estaHablando,
+                        estadoActual,
+                        nucleoTactico1Cognitivo,
+                        nucleoTactico2Vision,
+                        nucleoTactico3Ejecucion,
+                        nucleoTactico4Proactivo,
+                        nucleoTactico5Supervisor
+                    )
+                }
+                mainHandler.postDelayed(this, 33L)
+            }
+        }
+        mainHandler.post(runnableAnim)
+    }
+
+    private fun abrirSelectorCarpetaIA() {
+        try {
+            val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
+            startActivityForResult(intent, REQ_SELECCIONAR_CARPETA)
+        } catch (_: Exception) {
+            agregarMensajeConsola("N.E.Y.T.H.A.N.", "No fue posible abrir el selector de carpetas en este dispositivo, señor.")
+        }
+    }
+
+    private fun indexarCarpetaSAF(treeUri: Uri) {
+        thread {
+            try {
+                val docId = DocumentsContract.getTreeDocumentId(treeUri)
+                val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, docId)
+                val cursor = contentResolver.query(
+                    childrenUri,
+                    arrayOf(
+                        DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                        DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                        DocumentsContract.Document.COLUMN_MIME_TYPE,
+                        DocumentsContract.Document.COLUMN_SIZE,
+                        DocumentsContract.Document.COLUMN_LAST_MODIFIED
+                    ),
+                    null,
+                    null,
+                    null
+                )
+                var conteo = 0
+                cursor?.use { c ->
+                    while (c.moveToNext()) {
+                        val id = c.getString(0) ?: continue
+                        val nombre = c.getString(1) ?: "sin_nombre"
+                        val mime = c.getString(2) ?: "application/octet-stream"
+                        val tamano = c.getLong(3) / 1024L
+                        val fecha = c.getLong(4)
+                        val fileUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, id)
+                        indiceArchivosIA.add(
+                            ArchivoIndexadoIA(nombre, fileUri.toString(), fileUri, mime, tamano, fecha, "")
+                        )
+                        conteo++
+                    }
+                }
+                agregarMensajeConsola("GESTOR IA", "Carpeta vinculada: $conteo archivos indexados correctamente.")
+            } catch (e: Exception) {
+                agregarMensajeConsola("GESTOR IA", "Error al indexar carpeta: ${e.message}")
+            }
+        }
+    }
+
+    private fun indexarArchivosDispositivoSilencioso() {
+        thread {
+            try {
+                val dirDescargas = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                if (dirDescargas != null && dirDescargas.exists() && dirDescargas.canRead()) {
+                    dirDescargas.listFiles()?.take(50)?.forEach { archivo ->
+                        if (archivo.isFile) {
+                            indiceArchivosIA.add(
+                                ArchivoIndexadoIA(
+                                    nombre = archivo.name,
+                                    rutaOuri = archivo.absolutePath,
+                                    uri = Uri.fromFile(archivo),
+                                    mimeType = "text/plain",
+                                    tamanoKb = archivo.length() / 1024L,
+                                    fechaModificacion = archivo.lastModified(),
+                                    extractoTexto = ""
+                                )
+                            )
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    private fun buscarEnIndiceArchivos(consulta: String) {
+        if (consulta.isEmpty()) {
+            hablar("Indíqueme el nombre o palabra clave del archivo que desea localizar, señor.")
+            return
+        }
+        val encontrado = indiceArchivosIA.firstOrNull {
+            it.nombre.contains(consulta, ignoreCase = true)
+        }
+        if (encontrado != null) {
+            ultimoArchivoEncontrado = encontrado
+            hablar("Archivo localizado, señor: ${encontrado.nombre} (${encontrado.tamanoKb} KB).")
+        } else {
+            hablar("No encontré ningún archivo coincidente con '$consulta' en el índice actual, señor.")
+        }
+    }
+
+    private fun auditarCompilacionesGithubSilencioso() {
+        activarNucleoTactico(5, 3500L)
+    }
+
+    private fun ejecutarDiagnosticoYGuardarEnNotas() {
+        esperandoPermisoReporte = false
+        activarNucleoTactico(5, 4500L)
+        val detalle = falloPendienteDetalle ?: "Sin anomalías críticas registradas."
+        try {
+            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            clipboard.setPrimaryClip(ClipData.newPlainText("Reporte NeythanSupervisor", detalle))
+            val intentNota = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_SUBJECT, "Reporte Técnico N.E.Y.T.H.A.N.")
+                putExtra(Intent.EXTRA_TEXT, detalle)
+            }
+            startActivity(Intent.createChooser(intentNota, "Guardar diagnóstico en Notas"))
+            hablar("Diagnóstico copiado al portapapeles y listo para guardar en sus notas, señor.")
+        } catch (_: Exception) {
+            hablar("Diagnóstico copiado al portapapeles, señor.")
+        }
+    }
+
+    class NeythanGeodesicHudView(context: Context) : View(context) {
+        private var fase = 0f
+        private var vozUsuario = 0f
+        private var pulsoVoz = 0f
+        private var hablando = false
+        private var estado = "ESCUCHANDO"
+        private var t1 = false
+        private var t2 = false
+        private var t3 = false
+        private var t4 = false
+        private var t5 = false
+
+        private val paintAnillo = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = 3f
+            color = Color.parseColor("#00E5FF")
+        }
+        private val paintAnilloPunteado = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = 2f
+            color = Color.parseColor("#2A7B9B")
+            pathEffect = DashPathEffect(floatArrayOf(12f, 8f), 0f)
+        }
+        private val paintNucleo = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.FILL
         }
         private val paintTexto = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.parseColor("#8CEEFF")
+            textSize = 30f
             typeface = Typeface.MONOSPACE
-        }
-        private val paintBarraSpec = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.FILL
+            textAlign = Paint.Align.CENTER
         }
 
-        private val verticesEsfera = ArrayList<FloatArray>()
-        private val aristasEsfera = ArrayList<Pair<Int, Int>>()
-
-        init {
-            construirMallaGeodesica()
-        }
-
-        private fun construirMallaGeodesica() {
-            val t = ((1.0 + Math.sqrt(5.0)) / 2.0).toFloat()
-            val raw = listOf(
-                floatArrayOf(-1f, t, 0f), floatArrayOf(1f, t, 0f), floatArrayOf(-1f, -t, 0f), floatArrayOf(1f, -t, 0f),
-                floatArrayOf(0f, -1f, t), floatArrayOf(0f, 1f, t), floatArrayOf(0f, -1f, -t), floatArrayOf(0f, 1f, -t),
-                floatArrayOf(t, 0f, -1f), floatArrayOf(t, 0f, 1f), floatArrayOf(-t, 0f, -1f), floatArrayOf(-t, 0f, 1f)
-            )
-            for (v in raw) {
-                val len = Math.sqrt((v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).toDouble()).toFloat()
-                verticesEsfera.add(floatArrayOf(v[0] / len, v[1] / len, v[2] / len))
-            }
-            for (i in verticesEsfera.indices) {
-                for (j in i + 1 until verticesEsfera.size) {
-                    val dx = verticesEsfera[i][0] - verticesEsfera[j][0]
-                    val dy = verticesEsfera[i][1] - verticesEsfera[j][1]
-                    val dz = verticesEsfera[i][2] - verticesEsfera[j][2]
-                    val dist = Math.sqrt((dx * dx + dy * dy + dz * dz).toDouble()).toFloat()
-                    if (dist < 1.15f) {
-                        aristasEsfera.add(Pair(i, j))
-                    }
-                }
-            }
+        fun actualizarPulso(
+            vUsuario: Float,
+            pVoz: Float,
+            isHablando: Boolean,
+            st: String,
+            n1: Boolean,
+            n2: Boolean,
+            n3: Boolean,
+            n4: Boolean,
+            n5: Boolean
+        ) {
+            vozUsuario = vUsuario
+            pulsoVoz = pVoz
+            hablando = isHablando
+            estado = st
+            t1 = n1; t2 = n2; t3 = n3; t4 = n4; t5 = n5
+            fase = (fase + 1.8f) % 360f
+            invalidate()
         }
 
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
-            val w = width.toFloat()
-            val h = height.toFloat()
-            if (w <= 0f || h <= 0f) return
+            val cx = width / 2f
+            val cy = height / 2f
+            val radioBase = (minOf(width, height) * 0.28f).coerceAtLeast(60f)
+            val impulso = if (hablando) pulsoVoz * 26f else (vozUsuario * 2.2f)
+            val radioDinamico = radioBase + impulso
 
-            val tiempo = System.currentTimeMillis() / 1000.0
-            val colorPrincipal = when {
-                esperandoPermisoReporte -> Color.parseColor("#FF3D57")
-                estadoActual == "HABLANDO" -> Color.parseColor("#00E676")
-                estadoActual == "PROCESANDO" -> Color.parseColor("#FFB300")
-                estadoActual == "PAUSADO" -> Color.parseColor("#546E7A")
-                else -> Color.parseColor("#00E5FF")
-            }
-
-            paintFondo.shader = RadialGradient(
-                w / 2f, h * 0.48f, w.coerceAtLeast(h) * 0.7f,
-                intArrayOf(Color.parseColor("#0D223A"), Color.parseColor("#050B14"), Color.parseColor("#03060C")),
-                floatArrayOf(0f, 0.55f, 1f),
+            paintNucleo.shader = RadialGradient(
+                cx, cy, radioDinamico * 1.4f,
+                intArrayOf(
+                    Color.parseColor("#6600F0FF"),
+                    Color.parseColor("#220088CC"),
+                    Color.TRANSPARENT
+                ),
+                floatArrayOf(0f, 0.6f, 1f),
                 Shader.TileMode.CLAMP
             )
-            canvas.drawRect(0f, 0f, w, h, paintFondo)
+            canvas.drawCircle(cx, cy, radioDinamico * 1.4f, paintNucleo)
 
-            paintLinea.color = colorPrincipal
-            paintLinea.alpha = 90
-            canvas.drawRect(4f, 4f, w - 4f, h - 4f, paintLinea)
-
-            dibujarPanelNucleosBasicos(canvas, w, colorPrincipal)
-            dibujarPanelNucleosTacticos(canvas)
-
-            val cx = w / 2f
-            val cy = h * 0.49f
-            val pulso = if (estaHablando) (sin(tiempo * 14.0) * 10.0).toFloat() else (nivelVozUsuario * 2.5f)
-            val radioEsfera = (w.coerceAtMost(h) * 0.24f) + pulso
-
-            paintAnilloDash.color = colorPrincipal
-            paintAnilloDash.alpha = 150
             canvas.save()
-            canvas.rotate((tiempo * 24.0 % 360.0).toFloat(), cx, cy)
-            canvas.drawCircle(cx, cy, radioEsfera * 1.28f, paintAnilloDash)
+            canvas.rotate(fase, cx, cy)
+            canvas.drawCircle(cx, cy, radioDinamico, paintAnillo)
             canvas.restore()
 
-            paintLinea.color = colorPrincipal
-            paintLinea.alpha = 70
-            canvas.drawCircle(cx, cy, radioEsfera * 1.42f, paintLinea)
+            canvas.save()
+            canvas.rotate(-fase * 0.7f, cx, cy)
+            canvas.drawCircle(cx, cy, radioDinamico * 1.22f, paintAnilloPunteado)
+            canvas.restore()
 
-            val velRot = if (estadoActual == "PROCESANDO") 1.8 else 0.65
-            val angY = tiempo * velRot
-            val angX = tiempo * (velRot * 0.55)
-            val proyecciones = Array(verticesEsfera.size) { FloatArray(3) }
-
-            for (i in verticesEsfera.indices) {
-                val vx = verticesEsfera[i][0]
-                val vy = verticesEsfera[i][1]
-                val vz = verticesEsfera[i][2]
-
-                val x1 = (vx * cos(angY) - vz * sin(angY)).toFloat()
-                val z1 = (vx * sin(angY) + vz * cos(angY)).toFloat()
-                val y2 = (vy * cos(angX) - z1 * sin(angX)).toFloat()
-                val z2 = (vy * sin(angX) + z1 * cos(angX)).toFloat()
-
-                val escala = 2.4f / (2.4f - z2 * 0.65f)
-                proyecciones[i][0] = cx + x1 * radioEsfera * escala
-                proyecciones[i][1] = cy + y2 * radioEsfera * escala
-                proyecciones[i][2] = z2
-            }
-
-            for ((a, b) in aristasEsfera) {
-                val zProm = (proyecciones[a][2] + proyecciones[b][2]) / 2f
-                paintLinea.color = colorPrincipal
-                paintLinea.alpha = (110 + (zProm * 110)).toInt().coerceIn(45, 240)
-                canvas.drawLine(
-                    proyecciones[a][0], proyecciones[a][1],
-                    proyecciones[b][0], proyecciones[b][1],
-                    paintLinea
-                )
-            }
-
-            for (p in proyecciones) {
-                paintNodo.color = Color.WHITE
-                paintNodo.alpha = (140 + (p[2] * 100)).toInt().coerceIn(70, 255)
-                canvas.drawCircle(p[0], p[1], 4.2f, paintNodo)
-            }
-
-            paintTexto.color = Color.WHITE
-            paintTexto.textAlign = Paint.Align.CENTER
-            paintTexto.textSize = 30f
-            paintTexto.isFakeBoldText = true
-            canvas.drawText("N E Y T H A N", cx, cy + 10f, paintTexto)
-
-            dibujarEspectrometroYTelemetria(canvas, w, h, tiempo, colorPrincipal)
-        }
-
-        private fun dibujarPanelNucleosBasicos(canvas: Canvas, w: Float, colorPrincipal: Int) {
-            paintTexto.textSize = 21f
-            paintTexto.isFakeBoldText = true
-            paintTexto.textAlign = Paint.Align.LEFT
-
-            val cB1 = if (nucleoBasico1Voz) Color.parseColor("#00E676") else Color.GRAY
-            paintNodo.color = cB1
-            canvas.drawCircle(24f, 30f, 6f, paintNodo)
-            paintTexto.color = cB1
-            canvas.drawText("B1:VOZ/SENSOR", 38f, 37f, paintTexto)
-
-            val cB2 = if (nucleoBasico2Memoria) Color.parseColor("#00E5FF") else Color.GRAY
-            paintNodo.color = cB2
-            canvas.drawCircle(w * 0.42f, 30f, 6f, paintNodo)
-            paintTexto.color = cB2
-            canvas.drawText("B2:MEMORIA", w * 0.42f + 14f, 37f, paintTexto)
-
-            paintTexto.textAlign = Paint.Align.RIGHT
-            paintTexto.color = colorPrincipal
-            canvas.drawText("● $estadoActual", w - 20f, 37f, paintTexto)
-        }
-
-        private fun dibujarPanelNucleosTacticos(canvas: Canvas) {
-            val tacticos = listOf(
-                Triple("T1:COGNITIVO", nucleoTactico1Cognitivo, "#FFB300"),
-                Triple("T2:VISIÓN", nucleoTactico2Vision, "#E040FB"),
-                Triple("T3:EJECUCIÓN", nucleoTactico3Ejecucion, "#00E676"),
-                Triple("T4:PROACTIVO", nucleoTactico4Proactivo, "#00E5FF"),
-                Triple("T5:SUPERVISOR", nucleoTactico5Supervisor, "#FF3D57")
-            )
-
-            paintTexto.textSize = 19f
-            paintTexto.isFakeBoldText = false
-            paintTexto.textAlign = Paint.Align.LEFT
-
-            var y = 78f
-            for ((nombre, activo, hexColor) in tacticos) {
-                val color = if (activo) Color.parseColor(hexColor) else Color.parseColor("#3B556E")
-                paintNodo.color = color
-                canvas.drawCircle(24f, y - 6f, if (activo) 6.5f else 4.5f, paintNodo)
-                paintTexto.color = if (activo) Color.WHITE else Color.parseColor("#5C7B99")
-                canvas.drawText(nombre, 38f, y, paintTexto)
-                y += 30f
-            }
-        }
-
-        private fun dibujarEspectrometroYTelemetria(
-            canvas: Canvas,
-            w: Float,
-            h: Float,
-            tiempo: Double,
-            colorPrincipal: Int
-        ) {
-            val numBarras = 24
-            val anchoTotal = w * 0.84f
-            val inicioX = (w - anchoTotal) / 2f
-            val baseY = h - 46f
-            val anchoBarra = (anchoTotal / numBarras) * 0.65f
-            val paso = anchoTotal / numBarras
-
-            paintBarraSpec.color = colorPrincipal
-            for (i in 0 until numBarras) {
-                val factorActividad = when {
-                    estaHablando -> 0.55f + (sin(tiempo * 16.0 + i * 0.7).toFloat() * 0.45f)
-                    nivelVozUsuario > 0.5f -> (nivelVozUsuario / 12f) * (0.5f + sin(tiempo * 12.0 + i).toFloat() * 0.5f)
-                    else -> 0.12f + (sin(tiempo * 3.0 + i * 0.4).toFloat() * 0.08f)
+            val tacticos = listOf(t1, t2, t3, t4, t5)
+            for (i in tacticos.indices) {
+                val angulo = Math.toRadians((i * 72.0) - 90.0)
+                val nx = cx + (radioBase * 1.55f * cos(angulo)).toFloat()
+                val ny = cy + (radioBase * 1.55f * sin(angulo)).toFloat()
+                val pNodo = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    style = Paint.Style.FILL
+                    color = if (tacticos[i]) Color.parseColor("#00FF9D") else Color.parseColor("#16324A")
                 }
-                val altura = (44f * factorActividad.coerceIn(0.08f, 1.0f))
-                val x = inicioX + i * paso
-                val rect = RectF(x, baseY - altura, x + anchoBarra, baseY)
-                paintBarraSpec.alpha = (130 + (factorActividad * 125)).toInt().coerceIn(90, 255)
-                canvas.drawRoundRect(rect, 3f, 3f, paintBarraSpec)
+                canvas.drawCircle(nx, ny, 10f, pNodo)
             }
 
-            val runtime = Runtime.getRuntime()
-            val ramUsadaMb = (runtime.totalMemory() - runtime.freeMemory()) / (1024 * 1024)
-            val hz = if (estaHablando) "480 HZ" else if (nivelVozUsuario > 0.5f) "220 HZ" else "60 HZ"
-
-            paintTexto.textSize = 19f
-            paintTexto.isFakeBoldText = true
-            paintTexto.color = Color.parseColor("#7FA8C9")
-            paintTexto.textAlign = Paint.Align.LEFT
-            canvas.drawText("FREQ:$hz  RAM:${ramUsadaMb}MB", 20f, h - 14f, paintTexto)
-
-            paintTexto.textAlign = Paint.Align.RIGHT
-            paintTexto.color = colorPrincipal
-            canvas.drawText("MODE:$modoMotor", w - 20f, h - 14f, paintTexto)
+            canvas.drawText("N.E.Y.T.H.A.N. // $estado", cx, height - 24f, paintTexto)
         }
     }
 }
